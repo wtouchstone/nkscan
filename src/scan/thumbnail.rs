@@ -19,6 +19,7 @@ use crate::{
         },
         data::{Boundary, Rect},
         decode::{Image, Samples},
+        model::Model,
         window::{Flags, Window},
     },
 };
@@ -277,7 +278,8 @@ fn opening(caps: &Capabilities) -> (u32, u32) {
 ///   LS5000.md3 `10083ba0`. This is the Y maximum address plus one (LS5000
 ///   2-2-2-3, note 3).
 /// - Strip adapters: the X boundary wide, to the Y maximum address.
-///   `CSAThumbManager::CreateRect`, LS5000.md3 Mac `10047270`.
+///   `CSAThumbManager::CreateRect`, LS5000.md3 Mac `10047270`. nkcolor: a
+///   strip adapter that reports a zero Y maximum gets [`strip_height`].
 fn area(caps: &Capabilities) -> ((u32, u32), (u32, u32)) {
     let (x, y) = (&caps.address.x_axis, &caps.address.y_axis);
     let full = |axis: &Axis| axis.address_range.last - axis.address_range.start + 1;
@@ -295,9 +297,38 @@ fn area(caps: &Capabilities) -> ((u32, u32), (u32, u32)) {
         }
         _ => {
             let (left, width) = opening(caps);
-            ((left, top), (width, y.address_range.last))
+            ((left, top), (width, strip_height(caps)))
         }
     }
+}
+
+/// nkcolor: the whole Y span a strip-adapter thumbnail must read
+///
+/// An LS-4x/LS-5x strip adapter can report a zero maximum before its first
+/// thumbnail has measured the loaded strip. The LS-5000 interface document
+/// defines the transport maximum as `(maximum image count + 2) * boundary`.
+/// The extra two frame lengths let the scanner find both ends of the film.
+/// This is also the rule behind the 250,278-address LS-50/LS-5000 window that
+/// passed the original hardware test with a 40-frame adapter.
+fn strip_height(caps: &Capabilities) -> u32 {
+    let y = &caps.address.y_axis;
+    if y.address_range.last != 0 {
+        return y.address_range.last;
+    }
+    let height = match caps.identity.model() {
+        Some(Model::Ls40 | Model::Ls50 | Model::Ls4000 | Model::Ls5000) => y
+            .boundary
+            .saturating_mul(u32::from(caps.address.max_frames).saturating_add(2)),
+        _ => y.boundary,
+    };
+    info!(
+        product = caps.identity.product,
+        y_boundary = y.boundary,
+        max_frames = caps.address.max_frames,
+        height,
+        "the adapter reports no Y maximum; the thumbnail reads the transport span"
+    );
+    height
 }
 
 /// The X address of each row of a thumbnail
@@ -509,6 +540,42 @@ mod tests {
             rows.iter()
                 .any(|&x| (second.left..second.left + second.width).contains(&x))
         );
+    }
+
+    /// The test capabilities as an LS-50 with a strip adapter
+    fn ls50_strip(y_max: u32, max_frames: u8) -> Capabilities {
+        let mut caps = caps();
+        caps.identity.product = "LS-50 ED".into();
+        caps.address.holder_id = None;
+        caps.adapter = Some("Strip".into());
+        caps.address.y_axis.address_range = (0..=y_max).into();
+        caps.address.y_axis.boundary = 5959;
+        caps.address.max_frames = max_frames;
+        caps
+    }
+
+    /// nkcolor: the LS-50 can publish zero before it measures the strip. The
+    /// scanner needs two extra frame lengths to find the head and tail
+    #[test]
+    fn an_ls50_empty_y_range_uses_the_full_sa21_transport() {
+        let windows = windows(&ls50_strip(0, 6)).expect("thumbnail windows");
+        assert!(windows.iter().all(|w| w.origin.1 == 0));
+        assert!(windows.iter().all(|w| w.size.1 == 47_672));
+    }
+
+    /// nkcolor: the 40-frame adapter reproduces the LS-50 hardware-tested
+    /// value from nkscan's original support change
+    #[test]
+    fn an_ls50_empty_y_range_uses_the_full_sa30_transport() {
+        let windows = windows(&ls50_strip(0, 40)).expect("thumbnail windows");
+        assert!(windows.iter().all(|w| w.size.1 == 250_278));
+    }
+
+    /// nkcolor: a strip adapter's nonzero Y maximum stands as reported
+    #[test]
+    fn a_strip_thumbnail_uses_the_advertised_y_maximum() {
+        let windows = windows(&ls50_strip(120_000, 40)).expect("thumbnail windows");
+        assert!(windows.iter().all(|w| w.size.1 == 120_000));
     }
 
     /// One Y boundary for each loaded frame, which is one more than the Y maximum address
