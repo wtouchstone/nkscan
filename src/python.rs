@@ -725,6 +725,7 @@ impl PySession {
         superfine=false,
         infrared=false,
         clean=false,
+        clean_quality="normal",
         film=None,
         format=None,
         base_density=None,
@@ -743,6 +744,7 @@ impl PySession {
         superfine: bool,
         infrared: bool,
         clean: bool,
+        clean_quality: &str,
         film: Option<&str>,
         format: Option<&str>,
         base_density: Option<(f64, f64, f64)>,
@@ -752,6 +754,15 @@ impl PySession {
         focus: Option<Bound<'_, PyAny>>,
         progress: Option<Py<PyAny>>,
     ) -> PyResult<PyScanResult> {
+        let clean_quality = match clean_quality {
+            "normal" => crate::dust::Quality::Normal,
+            "fine" => crate::dust::Quality::Fine,
+            value => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown clean quality: {value}"
+                )));
+            }
+        };
         let focus = focus_from(focus.as_ref())?;
         let frame = rect(frame);
         let metering = metering_from(film, format, base_density, lock_white_balance)?;
@@ -780,6 +791,7 @@ impl PySession {
                     metering,
                     clean,
                     focus,
+                    clean_quality,
                 };
                 let scanned = block_on(frame::scan_frame_with(
                     session,
