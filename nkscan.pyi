@@ -432,7 +432,7 @@ class Session:
         works the same as a detected one, just slower if the stage has to home
         first to reach it
         """
-    def scan_frame(self, frame: tuple[builtins.int, builtins.int, builtins.int, builtins.int], dpi: typing.Optional[builtins.int] = None, samples: builtins.int = 1, superfine: builtins.bool = False, infrared: builtins.bool = False, clean: builtins.bool = False, clean_quality: builtins.str = 'normal', film: typing.Optional[builtins.str] = None, format: typing.Optional[builtins.str] = None, base_density: typing.Optional[tuple[builtins.float, builtins.float, builtins.float]] = None, lock_white_balance: typing.Optional[builtins.bool] = None, nikon_negative_meter: builtins.bool = False, exposures: typing.Optional[typing.Mapping[builtins.str, builtins.int]] = None, focus: typing.Optional[typing.Union[builtins.int, tuple[builtins.float, builtins.float], typing.Literal['auto', 'hold']]] = None, progress: typing.Optional[typing.Any] = None, overscan: builtins.int = 0) -> ScanResult:
+    def scan_frame(self, frame: tuple[builtins.int, builtins.int, builtins.int, builtins.int], dpi: typing.Optional[builtins.int] = None, samples: builtins.int = 1, superfine: builtins.bool = False, infrared: builtins.bool = False, clean: builtins.bool = False, clean_quality: builtins.str = 'normal', film: typing.Optional[builtins.str] = None, format: typing.Optional[builtins.str] = None, base_density: typing.Optional[tuple[builtins.float, builtins.float, builtins.float]] = None, lock_white_balance: typing.Optional[builtins.bool] = None, positive: builtins.bool = False, nikon_negative_meter: builtins.bool = False, frame_offset: builtins.int = 0, exposures: typing.Optional[typing.Mapping[builtins.str, builtins.int]] = None, focus: typing.Optional[typing.Union[builtins.int, tuple[builtins.float, builtins.float], typing.Literal['auto', 'hold']]] = None, progress: typing.Optional[typing.Any] = None, overscan: builtins.int = 0) -> ScanResult:
         r"""
         Focus, meter, take the pass over `frame`, and optionally clean it
         
@@ -451,7 +451,9 @@ class Session:
         internally and cannot be combined with retained `infrared` output.
         nkcolor: `nikon_negative_meter` meters as a color negative with the rule
         a Nikon Scan capture verifies on this unit, and refuses other units.
-        Every host meter image comes back in `meter_passes`
+        Every host meter image comes back in `meter_passes`. `positive` and
+        `frame_offset` are accepted and ignored: the rectangle given is the
+        rectangle scanned
         """
     def meter_frame(self, frame: tuple[builtins.int, builtins.int, builtins.int, builtins.int], infrared: builtins.bool = False, film: typing.Optional[builtins.str] = None, format: typing.Optional[builtins.str] = None, base_density: typing.Optional[tuple[builtins.float, builtins.float, builtins.float]] = None, lock_white_balance: typing.Optional[builtins.bool] = None, progress: typing.Optional[typing.Any] = None) -> builtins.dict[builtins.str, builtins.int]:
         r"""
@@ -464,7 +466,7 @@ class Session:
         `film`, `format`, `base_density` and `lock_white_balance` are
         `scan_frame`'s
         """
-    def focus_frame(self, frame: tuple[builtins.int, builtins.int, builtins.int, builtins.int], focus: typing.Optional[typing.Union[builtins.int, tuple[builtins.float, builtins.float], typing.Literal['auto', 'hold']]] = None) -> tuple[builtins.str, typing.Optional[builtins.int]]:
+    def focus_frame(self, frame: tuple[builtins.int, builtins.int, builtins.int, builtins.int], focus: typing.Optional[typing.Union[builtins.int, tuple[builtins.float, builtins.float], typing.Literal['auto', 'hold']]] = None, at: typing.Optional[tuple[builtins.float, builtins.float]] = None) -> tuple[builtins.str, typing.Optional[builtins.int]]:
         r"""
         Focus on `frame` without metering or scanning it
         
@@ -481,6 +483,10 @@ class Session:
         - "hold": the lens does not move.
         
         To scan at this focus, call `scan_frame` with `focus="hold"`
+        
+        nkcolor compatibility: `at=(x, y)` autofocuses at that point, as the
+        fork's earlier `focus_frame(frame, at=...)` did, and then reports
+        "not-reached" with a hyphen as that call did.
         """
     def autofocus(self, x: builtins.int, y: builtins.int, color: typing.Optional[builtins.int] = None) -> None:
         r"""

@@ -943,7 +943,9 @@ impl PySession {
     /// internally and cannot be combined with retained `infrared` output.
     /// nkcolor: `nikon_negative_meter` meters as a color negative with the rule
     /// a Nikon Scan capture verifies on this unit, and refuses other units.
-    /// Every host meter image comes back in `meter_passes`
+    /// Every host meter image comes back in `meter_passes`. `positive` and
+    /// `frame_offset` are accepted and ignored: the rectangle given is the
+    /// rectangle scanned
     #[pyo3(signature = (
         frame,
         dpi=None,
@@ -956,7 +958,9 @@ impl PySession {
         format=None,
         base_density=None,
         lock_white_balance=None,
+        positive=false,
         nikon_negative_meter=false,
+        frame_offset=0,
         exposures=None,
         focus=None,
         progress=None,
@@ -977,13 +981,16 @@ impl PySession {
         format: Option<&str>,
         base_density: Option<(f64, f64, f64)>,
         lock_white_balance: Option<bool>,
+        positive: bool,
         nikon_negative_meter: bool,
+        frame_offset: i32,
         exposures: Option<HashMap<String, u32>>,
         #[gen_stub(override_type(type_repr = "typing.Optional[typing.Union[builtins.int, tuple[builtins.float, builtins.float], typing.Literal['auto', 'hold']]]", imports = ("builtins", "typing")))]
         focus: Option<Bound<'_, PyAny>>,
         progress: Option<Py<PyAny>>,
         overscan: u32,
     ) -> PyResult<PyScanResult> {
+        let _ = (positive, frame_offset);
         if infrared && clean {
             return Err(PyValueError::new_err(
                 "infrared retention and dust removal are mutually exclusive",
@@ -1158,20 +1165,30 @@ impl PySession {
     /// - "hold": the lens does not move.
     ///
     /// To scan at this focus, call `scan_frame` with `focus="hold"`
-    #[pyo3(signature = (frame, focus=None))]
+    ///
+    /// nkcolor compatibility: `at=(x, y)` autofocuses at that point, as the
+    /// fork's earlier `focus_frame(frame, at=...)` did, and then reports
+    /// "not-reached" with a hyphen as that call did.
+    #[pyo3(signature = (frame, focus=None, at=None))]
     fn focus_frame(
         &self,
         py: Python<'_>,
         frame: (u32, u32, u32, u32),
         #[gen_stub(override_type(type_repr = "typing.Optional[typing.Union[builtins.int, tuple[builtins.float, builtins.float], typing.Literal['auto', 'hold']]]", imports = ("builtins", "typing")))]
         focus: Option<Bound<'_, PyAny>>,
+        at: Option<(f32, f32)>,
     ) -> PyResult<(String, Option<u16>)> {
-        let focus = focus_from(focus.as_ref())?;
+        let legacy = at.is_some();
+        let focus = match at {
+            Some(at) => Focus::Auto { at, color: None },
+            None => focus_from(focus.as_ref())?,
+        };
         let frame = rect(frame);
         let (focused, position) = py.detach(move || {
             self.with(|session| block_on(frame::focus_frame(session, frame, focus)))
         })?;
-        Ok((focused_name(focused), position))
+        let name = focused_name(focused);
+        Ok((if legacy { name.replace('_', "-") } else { name }, position))
     }
 
     /// Autofocus on the point `(x, y)`, in frame addresses
