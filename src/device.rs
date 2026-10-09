@@ -271,11 +271,18 @@ async fn usb_devices() -> Vec<nusb::DeviceInfo> {
 async fn probe(transport: &mut dyn Transport) -> Option<Identity> {
     let cmd = Inquiry::standard();
     let mut buf = vec![0u8; cmd.allocation_length()];
-    let completion = transport
+    let completion = match transport
         .execute(&cmd.cdb(), Data::In(&mut buf), PROBE_TIMEOUT)
         .await
-        .ok()?;
+    {
+        Ok(completion) => completion,
+        Err(e) => {
+            debug!(%e, "the unit opened but did not answer INQUIRY");
+            return None;
+        }
+    };
     if completion.status != Status::Good {
+        debug!(status = ?completion.status, sense = ?completion.sense, "INQUIRY did not complete good");
         return None;
     }
     buf.truncate(completion.transferred);
@@ -326,8 +333,15 @@ async fn scsi_devices() -> Vec<Probed> {
     let mut found = Vec::new();
     for n in 0.. {
         let path = PathBuf::from(format!(r"\\.\Scanner{n}"));
-        let Ok(mut transport) = ScsiScanDevice::open(&path) else {
-            break;
+        let mut transport = match ScsiScanDevice::open(&path) {
+            Ok(transport) => transport,
+            // The first path that will not open ends the list. Say why: a
+            // missing device, one another handle holds, and a refused open
+            // each look the same to a caller that only sees an empty list
+            Err(e) => {
+                debug!(?path, %e, code = ?e.raw_os_error(), "could not open the scanner path");
+                break;
+            }
         };
         let Some(identity) = probe(&mut transport).await else {
             continue;
