@@ -79,6 +79,8 @@ pub enum Action {
     Dump(Dump),
     /// Eject the loaded film or holder
     Eject(Eject),
+    /// Measure the scanner's light source again (Nikon Scan's Calibrate)
+    Calibrate(Calibrate),
     /// Clean a saved scan with its infrared file. No scanner needed.
     Clean(Clean),
 }
@@ -107,6 +109,13 @@ pub struct Clean {
 #[derive(clap::Args)]
 pub struct Eject {
     /// The scanner to eject. Optional, will default to the first found.
+    pub device: Option<String>,
+}
+
+/// Recalibrate the scanner's light source
+#[derive(clap::Args)]
+pub struct Calibrate {
+    /// The scanner to calibrate. Optional, will default to the first found.
     pub device: Option<String>,
 }
 
@@ -280,6 +289,12 @@ mod tests {
     use super::{Action, Cli, parse_focus_fraction, parse_frame_offset, parse_frame_rect};
     use clap::Parser;
     use nkscan::protocol::{caps::film::FilmFormat, data::Rect};
+
+    #[test]
+    fn calibrate_is_its_own_command() {
+        let cli = Cli::try_parse_from(["nkscan", "calibrate"]).unwrap();
+        assert!(matches!(cli.action, Action::Calibrate(_)));
+    }
 
     #[test]
     fn focus_fractions_include_both_edges() {

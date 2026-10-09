@@ -103,6 +103,11 @@ class Capabilities:
         Whether the unit can give the medium back on its own
         """
     @property
+    def calibrate(self) -> builtins.bool:
+        r"""
+        Whether the unit offers Nikon Scan's Calibrate, its shading measurement
+        """
+    @property
     def autofocus(self) -> builtins.bool:
         r"""
         Whether the unit focuses itself
@@ -365,6 +370,15 @@ class Session:
     def stage(self) -> None:
         r"""
         Put the unit in the state a scan expects
+        """
+    def calibrate_shading(self) -> builtins.bool:
+        r"""
+        Run the scanner's shading measurement, Nikon Scan's Calibrate
+        
+        The scanner measures its light source again, which corrects streaks
+        along the film travel. It can take about two minutes. The film is
+        staged again afterwards. Returns false when the scanner does not offer
+        it; `Capabilities.calibrate` says so in advance.
         """
     def eject(self) -> builtins.bool:
         r"""

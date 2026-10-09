@@ -1308,4 +1308,10 @@ mod tests {
         assert_eq!(action.kind(), Coop::Unknown(0x0A));
         assert!(matches!(action, CooperativeAction::Unknown(0x0A, _)));
     }
+
+    #[test]
+    fn shading_calibration_uses_b0_and_no_values() {
+        assert_eq!(Op::SetupShading.code(), 0xB0);
+        assert_eq!(Operation::default().to_bytes(), [0; Operation::LENGTH]);
+    }
 }

@@ -215,6 +215,25 @@ impl Session {
         Ok(())
     }
 
+    /// Run the scanner's shading measurement, Nikon Scan's Calibrate (B0h)
+    ///
+    /// The unit measures and applies its own shading correction; this asks it
+    /// to measure again, for streaks along the film travel. Nikon offers it as
+    /// a button and does not send it before a scan. Answers `false` when the
+    /// unit does not advertise the operation. Nikon gives about two minutes on
+    /// the LS-8000 and LS-9000, inside `MOVE_TIMEOUT`.
+    pub async fn calibrate_shading(&mut self) -> Result<bool, Error> {
+        if !self.caps.features.execute.supports(Op::SetupShading) {
+            debug!("this unit has no shading calibration operation");
+            return Ok(false);
+        }
+        info!("calibrating scanner shading");
+        self.execute(Op::SetupShading, Operation::default(), MOVE_TIMEOUT)
+            .await?;
+        info!("scanner shading calibration complete");
+        Ok(true)
+    }
+
     /// Run a command that some units will not have, answering whether it ran
     ///
     /// `Err` stays `Err` for every refusal but the one named

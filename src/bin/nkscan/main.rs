@@ -4,6 +4,7 @@ use nkscan::device;
 use std::io::{IsTerminal, stderr};
 use tracing_subscriber::EnvFilter;
 
+mod calibrate;
 mod cancel;
 mod clean;
 mod cli;
@@ -76,6 +77,7 @@ fn main() -> anyhow::Result<()> {
         }
         cli::Action::Dump(args) => pollster::block_on(dump::run(args))?,
         cli::Action::Eject(args) => pollster::block_on(eject::run(args))?,
+        cli::Action::Calibrate(args) => pollster::block_on(calibrate::run(args))?,
         cli::Action::Clean(args) => clean::run(args)?,
     }
 

@@ -341,6 +341,8 @@ pub struct PyCapabilities {
     multi_line: bool,
     /// Whether the unit can give the medium back on its own
     eject: bool,
+    /// Whether the unit offers Nikon Scan's Calibrate, its shading measurement
+    calibrate: bool,
     /// Whether the unit focuses itself
     autofocus: bool,
     /// Whether the unit runs an AE pass itself. False on every unit seen, an
@@ -489,6 +491,7 @@ impl From<&RustCapabilities> for PyCapabilities {
             },
             multi_line: caps.reads_lines_at_once(),
             eject: caps.features.execute.supports(Op::Unload),
+            calibrate: caps.features.execute.supports(Op::SetupShading),
             autofocus: caps.features.execute.supports(Op::AutoFocus),
             hardware_metering: unit_autoexposure_kind(
                 caps.identity.model(),
@@ -721,6 +724,24 @@ impl PySession {
     /// Put the unit in the state a scan expects
     fn stage(&self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| self.with(|s| block_on(s.stage())))
+    }
+
+    /// Run the scanner's shading measurement, Nikon Scan's Calibrate
+    ///
+    /// The scanner measures its light source again, which corrects streaks
+    /// along the film travel. It can take about two minutes. The film is
+    /// staged again afterwards. Returns false when the scanner does not offer
+    /// it; `Capabilities.calibrate` says so in advance.
+    fn calibrate_shading(&self, py: Python<'_>) -> PyResult<bool> {
+        py.detach(|| {
+            self.with(|session| {
+                let calibrated = block_on(session.calibrate_shading())?;
+                if calibrated {
+                    block_on(session.stage())?;
+                }
+                Ok(calibrated)
+            })
+        })
     }
 
     /// Give back whatever is loaded, answering whether the unit did anything
