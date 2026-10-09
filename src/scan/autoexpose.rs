@@ -7,6 +7,7 @@ use crate::{
             Capabilities,
             set_window::{AnalogControl, ScanKind, ScanMode},
         },
+        model::Model,
         window::{Channel, Flags, Window},
     },
     scan::meter::{Metering, prescan_divisor},
@@ -78,14 +79,12 @@ impl AutoExposure {
     /// LS-9000 sets [`ScanKind::AE`] or `AE_WB`, so every unit seen so far
     /// lands on [`Host`](Self::Host)
     pub(crate) fn choose(caps: &Capabilities, metering: &Metering) -> Result<Self, Error> {
-        let kinds = caps.set_window.kind;
-        let lock_white_balance = metering.lock_white_balance;
-
-        if lock_white_balance && kinds.contains(ScanKind::AE_WB) {
-            return Ok(Self::Unit(ScanKind::AE_WB));
-        }
-        if !lock_white_balance && kinds.contains(ScanKind::AE) {
-            return Ok(Self::Unit(ScanKind::AE));
+        if let Some(kind) = unit_autoexposure_kind(
+            caps.identity.model(),
+            caps.set_window.kind,
+            metering.lock_white_balance,
+        ) {
+            return Ok(Self::Unit(kind));
         }
 
         // We meter by moving the exposure in the descriptor, so the unit has to
@@ -102,6 +101,29 @@ impl AutoExposure {
 
         Ok(Self::Host(*metering))
     }
+}
+
+/// Select a scanner-side exposure pass only when the model implements it.
+///
+/// The LS-8000 reports bits 5 and 6 in D1h byte 4. Its interface document calls
+/// those bits reserved. A complete Nikon Scan trace uses ordinary image passes
+/// and host-side exposure decisions. Treating the bits as AE loses every meter
+/// image and returns one stale exposure set for all frames.
+pub(crate) fn unit_autoexposure_kind(
+    model: Option<Model>,
+    kinds: ScanKind,
+    lock_white_balance: bool,
+) -> Option<ScanKind> {
+    if matches!(model, Some(Model::Ls8000)) {
+        return None;
+    }
+    if lock_white_balance && kinds.contains(ScanKind::AE_WB) {
+        return Some(ScanKind::AE_WB);
+    }
+    if !lock_white_balance && kinds.contains(ScanKind::AE) {
+        return Some(ScanKind::AE);
+    }
+    None
 }
 
 /// The same windows, shrunk to something quick to take and read
@@ -173,6 +195,39 @@ mod tests {
         exposures.apply(&mut windows);
         assert_eq!(windows[0].exposure, 50842);
         assert_eq!(windows[1].exposure, 93004);
+    }
+
+    #[test]
+    fn ls8000_reserved_kind_bits_do_not_select_scanner_side_metering() {
+        let reported = ScanKind::IMAGE
+            | ScanKind::THUMBNAIL
+            | ScanKind::SETUP_1
+            | ScanKind::HISTOGRAM
+            | ScanKind::AE
+            | ScanKind::AE_WB;
+
+        assert_eq!(
+            unit_autoexposure_kind(Some(Model::Ls8000), reported, false),
+            None
+        );
+        assert_eq!(
+            unit_autoexposure_kind(Some(Model::Ls8000), reported, true),
+            None
+        );
+    }
+
+    #[test]
+    fn a_real_autoexposure_capability_remains_available_to_other_models() {
+        let reported = ScanKind::IMAGE | ScanKind::AE | ScanKind::AE_WB;
+
+        assert_eq!(
+            unit_autoexposure_kind(None, reported, false),
+            Some(ScanKind::AE)
+        );
+        assert_eq!(
+            unit_autoexposure_kind(None, reported, true),
+            Some(ScanKind::AE_WB)
+        );
     }
 
     /// A term set by hand is what gets applied

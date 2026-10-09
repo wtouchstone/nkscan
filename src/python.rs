@@ -10,11 +10,7 @@ use crate::{
     dust,
     error::Error,
     protocol::{
-        caps::{
-            Capabilities as RustCapabilities,
-            film::FilmFormat,
-            set_window::{ScanKind, ScanMode},
-        },
+        caps::{Capabilities as RustCapabilities, film::FilmFormat, set_window::ScanMode},
         data::{Op, Rect},
         decode::Samples,
         image::Layout,
@@ -22,7 +18,7 @@ use crate::{
         window::Channel,
     },
     scan::{
-        autoexpose::Exposures,
+        autoexpose::{Exposures, unit_autoexposure_kind},
         clean::clean_frame,
         focus::{Focus, Focused},
         frame::{self, Phase},
@@ -491,10 +487,12 @@ impl From<&RustCapabilities> for PyCapabilities {
             multi_line: caps.reads_lines_at_once(),
             eject: caps.features.execute.supports(Op::Unload),
             autofocus: caps.features.execute.supports(Op::AutoFocus),
-            hardware_metering: caps
-                .set_window
-                .kind
-                .intersects(ScanKind::AE | ScanKind::AE_WB),
+            hardware_metering: unit_autoexposure_kind(
+                caps.identity.model(),
+                caps.set_window.kind,
+                false,
+            )
+            .is_some(),
             interleavings: caps
                 .set_window
                 .interleaving
