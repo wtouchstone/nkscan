@@ -8,9 +8,11 @@ use nkscan::{
     device,
     protocol::{
         caps::set_window::ColorInterleaving,
+        data::Rect,
         decode::{Image, Samples},
     },
     scan::{
+        focus::{Focus, Focused},
         frame::{self, Options},
         framing::{self, Framing},
         profile::Film,
@@ -18,7 +20,7 @@ use nkscan::{
     },
     session::Session,
 };
-use std::ops::ControlFlow;
+use std::{ops::ControlFlow, time::Instant};
 
 /// The mean of each column of the first color plane, down the feed
 fn profile(image: &Image) -> Vec<f64> {
@@ -180,5 +182,58 @@ fn a_frame_scans_at_the_exposures_metered_for_it() {
         .await
         .expect("scan");
         assert_eq!(scanned.exposures, metered);
+    })
+}
+
+/// The AF button focuses a frame the operator moved along the film
+///
+/// Reported defect: autofocus on frame 3 answered "did not reach focus" at
+/// once and the scanner never moved. A perforation-framed unit resolves the
+/// autofocus address against its own frame table, and a moved frame's top is
+/// in no entry until it is registered. Upstream's frame::focus_frame registers it,
+/// as a scan does.
+#[test]
+#[ignore = "needs a perforation-framed scanner with 35mm film loaded"]
+fn a_moved_frame_is_focused_rather_than_refused() {
+    pollster::block_on(async {
+        let devices = device::list().await;
+        let device = devices.first().expect("a scanner");
+        let mut session = Session::open(device.open().await.expect("open"))
+            .await
+            .expect("session");
+        if Framing::choose(session.capabilities()) != Framing::Perforation {
+            eprintln!("not a perforation-framed unit, nothing to test");
+            return;
+        }
+        session.stage().await.expect("stage");
+        let mut samples = Samples::default();
+        let discovery = framing::discover(&mut session, None, Film::default(), &mut samples)
+            .await
+            .expect("discovery");
+        let found = *discovery
+            .frames
+            .get(2)
+            .or(discovery.frames.first())
+            .expect("a frame");
+        // About 1 mm along the film, as a user offset moves it
+        let moved = Rect {
+            top: found.top + 158,
+            bottom: found.bottom + 158,
+            ..found
+        };
+        let started = Instant::now();
+        let (outcome, _position) = frame::focus_frame(&mut session, moved, Focus::default())
+            .await
+            .expect("focus");
+        let took = started.elapsed();
+        assert_eq!(
+            outcome,
+            Focused::Yes,
+            "autofocus did not reach focus after {took:?}"
+        );
+        assert!(
+            took.as_millis() > 500,
+            "autofocus answered in {took:?}, too fast to have searched"
+        );
     })
 }
