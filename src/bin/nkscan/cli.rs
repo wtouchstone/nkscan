@@ -126,6 +126,11 @@ pub struct Scan {
     #[arg(long, value_delimiter = ',')]
     pub frames: Vec<usize>,
 
+    /// Add this many scanner address units around a negative full scan.
+    /// Perforation-framed scanners already read the complete gate.
+    #[arg(long, default_value_t = 0)]
+    pub overscan: u32,
+
     /// Include the IR pass
     #[arg(long, conflicts_with = "clean")]
     pub ir: bool,
@@ -173,6 +178,16 @@ pub fn parse_log_level(flag: &str) -> Result<LevelFilter, String> {
 mod tests {
     use super::{Action, Cli};
     use clap::Parser;
+
+    #[test]
+    fn overscan_is_a_nonnegative_address_margin() {
+        let cli = Cli::try_parse_from(["nkscan", "scan", "--overscan", "157"]).unwrap();
+        let Action::Scan(scan) = cli.action else {
+            panic!("scan action");
+        };
+        assert_eq!(scan.overscan, 157);
+        assert!(Cli::try_parse_from(["nkscan", "scan", "--overscan", "-1"]).is_err());
+    }
 
     #[test]
     fn built_in_cleaning_accepts_fine_quality() {

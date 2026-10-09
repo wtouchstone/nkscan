@@ -122,6 +122,7 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
         samples,
         superfine,
         frames,
+        overscan,
         ir,
         clean,
         clean_quality,
@@ -139,6 +140,9 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
     }
     if nikon_meter && film != Film::Negative {
         bail!("--nikon-meter only works with --film negative");
+    }
+    if overscan > 0 && film != Film::Negative {
+        bail!("--overscan only works with --film negative");
     }
 
     // What the scans get tagged with, which follows the film type
@@ -293,6 +297,7 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
             let mut shown = 0;
 
             let options = frame::Options {
+                overscan,
                 exposures: locked.as_ref(),
                 metering,
                 nikon_negative_meter: nikon_meter,

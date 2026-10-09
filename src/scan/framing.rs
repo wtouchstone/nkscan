@@ -494,10 +494,141 @@ pub async fn discover_with(
     }
 }
 
+/// Expand an addressed frame for a full scan while keeping it inside the
+/// scanner's address range and maximum window size.
+///
+/// A perforation-framed 135 frame is already the complete physical gate, so
+/// overscan is refused there.
+pub fn overscan_rect(caps: &Capabilities, frame: Rect, margin: u32) -> Result<Rect, Error> {
+    if margin == 0 {
+        return Ok(frame);
+    }
+    if Framing::choose(caps) == Framing::Perforation {
+        return Err(Error::Unsupported {
+            op: "frame overscan",
+            reason: "a perforation-framed frame is already the complete physical gate".into(),
+        });
+    }
+
+    let expand = |start: u32, end: u32, axis: &crate::protocol::caps::address::Axis| {
+        let extent = end.saturating_sub(start);
+        // Address reports its last coordinate as inclusive. Rect uses a
+        // half-open end. Convert the axis once before comparing their extents.
+        // A full-width LS-8000 frame is 518..9482 over an axis of 518..=9481.
+        let range_end = axis.address_range.last.saturating_add(1);
+        let range_extent = range_end.saturating_sub(axis.address_range.start);
+        let maximum = if axis.boundary == 0 {
+            range_extent
+        } else {
+            axis.boundary.min(range_extent)
+        };
+        let target = extent
+            .saturating_add(margin.saturating_mul(2))
+            .min(maximum.max(extent));
+        let extra = target.saturating_sub(extent);
+        let preferred = start.saturating_sub(extra / 2);
+        let minimum_start = axis.address_range.start.max(end.saturating_sub(target));
+        let maximum_start = start.min(range_end.saturating_sub(target));
+        let expanded_start = preferred.clamp(minimum_start, maximum_start);
+        (expanded_start, expanded_start.saturating_add(target))
+    };
+
+    let (top, bottom) = expand(frame.top, frame.bottom, &caps.address.y_axis);
+    let (left, right) = expand(frame.left, frame.right, &caps.address.x_axis);
+    Ok(Rect {
+        top,
+        left,
+        bottom,
+        right,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan::window::tests::caps;
+    use crate::{protocol::caps::other::DataTypes, scan::window::tests::caps};
+
+    #[test]
+    fn overscan_expands_an_addressed_frame_without_changing_its_center() {
+        let plain = caps();
+        let frame = Rect {
+            top: 3000,
+            left: 1000,
+            bottom: 7000,
+            right: 5000,
+        };
+
+        assert_eq!(
+            overscan_rect(&plain, frame, 200).expect("overscan"),
+            Rect {
+                top: 2800,
+                left: 800,
+                bottom: 7200,
+                right: 5200,
+            }
+        );
+        assert_eq!(overscan_rect(&plain, frame, 0).expect("no overscan"), frame);
+    }
+
+    #[test]
+    fn overscan_stays_inside_the_address_range() {
+        let plain = caps();
+        let frame = Rect {
+            top: plain.address.y_axis.address_range.start,
+            left: plain.address.x_axis.address_range.start,
+            bottom: plain.address.y_axis.address_range.start + 4000,
+            right: plain.address.x_axis.address_range.start + 4000,
+        };
+        let expanded = overscan_rect(&plain, frame, 200).expect("overscan");
+
+        assert_eq!(expanded.top, plain.address.y_axis.address_range.start);
+        assert_eq!(expanded.left, plain.address.x_axis.address_range.start);
+        assert!(expanded.bottom >= frame.bottom);
+        assert!(expanded.right >= frame.right);
+        assert!(expanded.bottom - expanded.top <= plain.address.y_axis.boundary);
+        assert!(expanded.right - expanded.left <= plain.address.x_axis.boundary);
+    }
+
+    /// The LS-8000 holder reports an inclusive last X coordinate. Its frame
+    /// rectangle uses the same physical edge as a half-open end. Treating both
+    /// values as half-open made the overscan start bounds cross and panicked.
+    #[test]
+    fn overscan_accepts_a_full_width_ls8000_frame() {
+        let mut plain = caps();
+        plain.address.x_axis.address_range = (518..=9481).into();
+        plain.address.x_axis.boundary = 8964;
+        let frame = Rect {
+            top: 3000,
+            left: 518,
+            bottom: 7000,
+            right: 9482,
+        };
+
+        assert_eq!(
+            overscan_rect(&plain, frame, 200).expect("overscan"),
+            Rect {
+                top: 2800,
+                left: 518,
+                bottom: 7200,
+                right: 9482,
+            }
+        );
+    }
+
+    #[test]
+    fn perforation_scanners_reject_a_second_overscan_rule() {
+        let mut perforated = caps();
+        perforated.features.data_types |= DataTypes::PERFORATION_READ;
+        let frame = Rect {
+            top: 2236,
+            left: 518,
+            bottom: 2236 + 5669,
+            right: 518 + 3946,
+        };
+
+        let error = overscan_rect(&perforated, frame, 100).expect_err("locked gate path");
+        assert!(format!("{error}").contains("complete physical gate"));
+    }
 
     /// Published frames take a thumbnail as a preview where Nikon Scan takes one
     #[test]
