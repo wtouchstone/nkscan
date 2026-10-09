@@ -1265,6 +1265,13 @@ fn channel_from_name(name: &str) -> Channel {
 #[pymodule]
 #[pyo3(name = "nkscan")]
 fn nkscan_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // nkcolor: the command-line program installs its own subscriber. Python
+    // callers do not, so without this every scanner event is discarded. Start
+    // upstream's reloadable log on stderr, which nkcolor's Windows launcher
+    // writes to its stable log. `RUST_LOG` overrides the level, and a later
+    // `init_logging` call changes the level and the destination
+    let _ = init_logging(Some("nkscan=debug"), None);
+
     m.add_class::<PyDevice>()?;
     m.add_class::<PyCapabilities>()?;
     m.add_class::<PySession>()?;
