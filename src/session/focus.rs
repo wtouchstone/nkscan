@@ -139,8 +139,17 @@ impl Session {
     /// instead: any rectangle inside a frame works.
     pub async fn focus_frame(&mut self, frame: Rect, focus: Focus) -> Result<Focused, Error> {
         match focus {
-            Focus::Hold => Ok(Focused::Skipped),
-            Focus::At(position) => self.focus_to(position).await.map(|()| Focused::Yes),
+            Focus::Hold => {
+                info!("focus held, no focus command sent");
+                Ok(Focused::Skipped)
+            }
+            Focus::At(position) => {
+                // The evidence has to say which focus a pass used. A fixed
+                // position sends no autofocus, and a blurred scan otherwise
+                // looks the same as a focused one in the log.
+                info!(position, "driving the lens to a fixed position");
+                self.focus_to(position).await.map(|()| Focused::Yes)
+            }
             Focus::Auto { at, color } => {
                 let caps = self.capabilities();
                 let point = |axis: &Axis, origin: u32, size: u32, fraction: f32| {
