@@ -214,7 +214,7 @@ async fn focus_on(
     frame: Rect,
     focus: Focus,
 ) -> Result<(Focused, Option<u16>), Error> {
-    let focused = session.focus_frame(frame, focus).await?;
+    let focused = crate::scan::focus::focus_in_table(session, frame, focus).await?;
     let position = session.focus_position().await.ok();
     if let Some(position) = position {
         info!(position, "focused at");
