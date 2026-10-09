@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
-use nkscan::{protocol::caps::film::FilmFormat, scan::profile};
+use nkscan::{
+    protocol::{caps::film::FilmFormat, data::Rect},
+    scan::profile,
+};
 use profile::Film;
 use std::{path::PathBuf, str::FromStr, sync::LazyLock};
 use tracing_subscriber::filter::LevelFilter;
@@ -10,6 +13,43 @@ static VERSION: LazyLock<String> = LazyLock::new(|| match option_env!("NKSCAN_BU
     Some(build) if !build.is_empty() => format!("{} ({build})", env!("CARGO_PKG_VERSION")),
     _ => env!("CARGO_PKG_VERSION").to_string(),
 });
+
+fn parse_frame_offset(value: &str) -> Result<(usize, i32, i32), String> {
+    let values = value
+        .split(':')
+        .map(str::parse)
+        .collect::<Result<Vec<i64>, _>>()
+        .map_err(|_| "use FRAME:X:Y".to_string())?;
+    match values.as_slice() {
+        [frame, x, y] if *frame >= 1 => Ok((
+            usize::try_from(*frame).map_err(|_| "frame is too large".to_string())?,
+            i32::try_from(*x).map_err(|_| "X offset is too large".to_string())?,
+            i32::try_from(*y).map_err(|_| "Y offset is too large".to_string())?,
+        )),
+        _ => Err("use FRAME:X:Y with a frame of 1 or greater".to_string()),
+    }
+}
+
+fn parse_frame_rect(value: &str) -> Result<(usize, Rect), String> {
+    let values = value
+        .split(':')
+        .map(str::parse)
+        .collect::<Result<Vec<u64>, _>>()
+        .map_err(|_| "use FRAME:TOP:LEFT:BOTTOM:RIGHT".to_string())?;
+    match values.as_slice() {
+        [frame, top, left, bottom, right] if *frame >= 1 && top < bottom && left < right => Ok((
+            usize::try_from(*frame).map_err(|_| "frame is too large".to_string())?,
+            Rect {
+                top: u32::try_from(*top).map_err(|_| "frame top is too large".to_string())?,
+                left: u32::try_from(*left).map_err(|_| "frame left is too large".to_string())?,
+                bottom: u32::try_from(*bottom)
+                    .map_err(|_| "frame bottom is too large".to_string())?,
+                right: u32::try_from(*right).map_err(|_| "frame right is too large".to_string())?,
+            },
+        )),
+        _ => Err("use FRAME:TOP:LEFT:BOTTOM:RIGHT with a non-empty rectangle".to_string()),
+    }
+}
 
 /// The version, plus the notices for what is compiled in alongside our own code
 ///
@@ -149,10 +189,27 @@ pub struct Scan {
     #[arg(long, value_delimiter = ',')]
     pub frames: Vec<usize>,
 
+    /// Move every selected frame by X Y scanner address units without changing its size.
+    #[arg(long, num_args = 2, value_names = ["X", "Y"], allow_hyphen_values = true)]
+    pub frame_offset: Vec<i32>,
+
+    /// Move one selected frame by X Y scanner address units. Repeat for more frames.
+    #[arg(long = "frame-offset-for", value_name = "FRAME:X:Y", value_parser = parse_frame_offset)]
+    pub frame_offsets: Vec<(usize, i32, i32)>,
+
     /// Add this many scanner address units around a negative full scan.
     /// Perforation-framed scanners already read the complete gate.
     #[arg(long, default_value_t = 0)]
     pub overscan: u32,
+
+    /// Reuse a frame rectangle found by an earlier thumbnail pass. Repeat for
+    /// more frames. This skips frame discovery for this run.
+    #[arg(
+        long = "frame-rect-for",
+        value_name = "FRAME:TOP:LEFT:BOTTOM:RIGHT",
+        value_parser = parse_frame_rect
+    )]
+    pub frame_rects: Vec<(usize, Rect)>,
 
     /// Include the IR pass
     #[arg(long, conflicts_with = "clean")]
@@ -211,8 +268,9 @@ fn parse_focus_fraction(flag: &str) -> Result<f32, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, Cli, parse_focus_fraction};
+    use super::{Action, Cli, parse_focus_fraction, parse_frame_offset, parse_frame_rect};
     use clap::Parser;
+    use nkscan::protocol::{caps::film::FilmFormat, data::Rect};
 
     #[test]
     fn focus_fractions_include_both_edges() {
@@ -229,6 +287,13 @@ mod tests {
     }
 
     #[test]
+    fn frame_offsets_name_one_frame_and_two_axes() {
+        assert_eq!(parse_frame_offset("3:-12:40"), Ok((3, -12, 40)));
+        assert!(parse_frame_offset("0:1:2").is_err());
+        assert!(parse_frame_offset("1:2").is_err());
+    }
+
+    #[test]
     fn overscan_is_a_nonnegative_address_margin() {
         let cli = Cli::try_parse_from(["nkscan", "scan", "--overscan", "157"]).unwrap();
         let Action::Scan(scan) = cli.action else {
@@ -236,6 +301,55 @@ mod tests {
         };
         assert_eq!(scan.overscan, 157);
         assert!(Cli::try_parse_from(["nkscan", "scan", "--overscan", "-1"]).is_err());
+    }
+
+    #[test]
+    fn frame_rectangles_name_one_previously_detected_frame() {
+        assert_eq!(
+            parse_frame_rect("2:100:20:300:220"),
+            Ok((
+                2,
+                Rect {
+                    top: 100,
+                    left: 20,
+                    bottom: 300,
+                    right: 220,
+                }
+            ))
+        );
+        assert!(parse_frame_rect("0:100:20:300:220").is_err());
+        assert!(parse_frame_rect("2:300:20:100:220").is_err());
+    }
+
+    #[test]
+    fn a_complete_saved_table_can_be_combined_with_a_frame_selection() {
+        let cli = Cli::try_parse_from([
+            "nkscan",
+            "scan",
+            "--frames",
+            "2",
+            "--frame-rect-for",
+            "1:10:0:110:40",
+            "--frame-rect-for",
+            "2:110:0:210:40",
+        ])
+        .unwrap();
+        let Action::Scan(scan) = cli.action else {
+            panic!("scan action");
+        };
+        assert_eq!(scan.frames, vec![2]);
+        assert_eq!(scan.frame_rects.len(), 2);
+    }
+
+    #[test]
+    fn comma_separated_frame_selection_keeps_all_requested_frames() {
+        let cli = Cli::try_parse_from(["nkscan", "scan", "--format", "645", "--frames", "1,2,3,4"])
+            .unwrap();
+        let Action::Scan(scan) = cli.action else {
+            panic!("scan action");
+        };
+        assert_eq!(scan.format, Some(FilmFormat::F645));
+        assert_eq!(scan.frames, vec![1, 2, 3, 4]);
     }
 
     #[test]

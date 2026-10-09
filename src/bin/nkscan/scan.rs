@@ -10,7 +10,7 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use nkscan::{
     device,
     error::Error,
-    protocol::{caps::other::DataTypes, decode::Samples, window::Channel},
+    protocol::{caps::other::DataTypes, data::Rect, decode::Samples, window::Channel},
     scan::{
         autoexpose::Exposures,
         focus::Focus,
@@ -126,7 +126,10 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
         samples,
         superfine,
         frames,
+        frame_offset,
+        frame_offsets,
         overscan,
+        frame_rects,
         ir,
         clean,
         clean_quality,
@@ -252,61 +255,104 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
         // others read them off a page and would leave a bar claiming a pass was
         // running. Made on the first report with a length for the same reason
         // the metering bars are
-        let takes_pass = framing.takes_thumbnail(session.capabilities());
-        let mut bar: Option<ProgressBar> = None;
-        let discovery = framing::discover_with(session, format, film, &mut samples, |p| {
-            if takes_pass && bar.is_none() && p.total > 0 {
-                bar = Some(pass_bar("thumbnail", p.total));
+        // nkcolor: reuse supplied frame rectangles instead of discovering them
+        let (selected_frames, base_density) = if frame_rects.is_empty() {
+            let takes_pass = framing.takes_thumbnail(session.capabilities());
+            let mut bar: Option<ProgressBar> = None;
+            let discovery = framing::discover_with(session, format, film, &mut samples, |p| {
+                if takes_pass && bar.is_none() && p.total > 0 {
+                    bar = Some(pass_bar("thumbnail", p.total));
+                }
+                if let Some(bar) = &bar {
+                    bar.report(p);
+                }
+                if cancel::requested() {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .await?;
+            if let Some(bar) = bar {
+                crate::progress::done(bar);
             }
-            if let Some(bar) = &bar {
-                bar.report(p);
-            }
-            if cancel::requested() {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        })
-        .await?;
-        if let Some(bar) = bar {
-            crate::progress::done(bar);
-        }
 
-        if save_thumbnail && let Some(pass) = &discovery.thumbnail {
-            let path = io::write_thumbnail(&basename, first, &samples, pass)?;
-            info!("wrote {}", path.display());
-        }
+            if save_thumbnail && let Some(pass) = &discovery.thumbnail {
+                let path = io::write_thumbnail(&basename, first, &samples, pass)?;
+                info!("wrote {}", path.display());
+            }
+
+            // Select all or the requested subset of the frames to scan
+            let selected = if frames.is_empty() {
+                discovery
+                    .frames
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, frame)| (index + 1, frame))
+                    .collect()
+            } else {
+                frames
+                    .iter()
+                    .map(|&idx| {
+                        discovery
+                            .frames
+                            .get(idx - 1)
+                            .cloned()
+                            .map(|frame| (idx, frame))
+                            .ok_or(anyhow!(
+                                "Requested frame {} not available. Frames detected: {}",
+                                idx,
+                                discovery.frames.len()
+                            ))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?
+            };
+            (selected, discovery.base_density)
+        } else {
+            if save_thumbnail {
+                warn!(
+                    "--frame-rect-for reuses an earlier thumbnail pass, so --thumbnail writes nothing"
+                );
+            }
+            info!(
+                frames = frame_rects.len(),
+                "reusing supplied frame rectangles"
+            );
+            // Upstream's frame::at_frame registers each rectangle against the
+            // table the unit holds, so a saved table needs no restoring here.
+            // No thumbnail measured the base, so metering uses Nikon Scan's default
+            (select_supplied_frames(&frame_rects, &frames)?, None)
+        };
 
         // Every frame on this strip is metered against the base its thumbnail measured
         let metering = Metering {
             lock_white_balance: hold_white_balance,
             format,
-            base_density: discovery.base_density,
+            base_density,
             ..Metering::new(film)
         };
 
-        // Select all or the requested subset of the frames to scan
-        let selected_frames = if frames.is_empty() {
-            discovery.frames
-        } else {
-            frames
-                .iter()
-                .map(|&idx| {
-                    discovery.frames.get(idx - 1).cloned().ok_or(anyhow!(
-                        "Requested frame {} not available. Frames detected: {}",
-                        idx,
-                        discovery.frames.len()
-                    ))
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?
-        };
+        let selected_frames = selected_frames
+            .into_iter()
+            .map(|(index, detected)| {
+                let specific = frame_offsets
+                    .iter()
+                    .find(|(frame, _, _)| *frame == index)
+                    .map(|(_, x, y)| (*x, *y));
+                let adjustment = specific.unwrap_or_else(|| frame_offset_axes(&frame_offset));
+                let moved = offset_frame(detected, &[adjustment.0, adjustment.1])?;
+                Ok((index, detected, moved, adjustment))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
         if selected_frames.is_empty() {
             warn!("No frames on this strip");
         }
 
         // Scan each frame
-        for (n, frame) in selected_frames.into_iter().enumerate() {
+        for (n, (source_frame, detected, frame, adjustment)) in
+            selected_frames.into_iter().enumerate()
+        {
             // Nothing is moving between frames either - the stage only
             // starts heading for the next one once this loop continues
             if cancel::requested() {
@@ -333,6 +379,21 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
                     cli::CleanQuality::Fine => nkscan::dust::Quality::Fine,
                 },
             };
+            info!(
+                "NKSCAN_FRAME_REQUEST slot={} source_frame={} detected={}:{}:{}:{} adjustment={}:{} submitted={}:{}:{}:{}",
+                n + 1,
+                source_frame,
+                detected.top,
+                detected.left,
+                detected.bottom,
+                detected.right,
+                adjustment.0,
+                adjustment.1,
+                frame.top,
+                frame.left,
+                frame.bottom,
+                frame.right,
+            );
             let setup_before = if save_meter {
                 setup_records(session).await
             } else {
@@ -477,7 +538,7 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
 
         // Naming frames is a targeted scan rather than a batch, and the
         // numbers mean nothing on the next holder anyway
-        if !frames.is_empty() {
+        if !frames.is_empty() || !frame_rects.is_empty() {
             break;
         }
 
@@ -513,6 +574,53 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
         wait_for_film(session, prompt, cartridge).await?;
     }
     Ok(())
+}
+
+/// Move a discovered frame without changing its size.
+fn offset_frame(frame: Rect, offset: &[i32]) -> anyhow::Result<Rect> {
+    let (x, y) = frame_offset_axes(offset);
+    let shifted = |value: u32, delta: i32| {
+        u32::try_from(i64::from(value) + i64::from(delta))
+            .map_err(|_| anyhow!("frame offset moves the scan outside the scanner address range"))
+    };
+    Ok(Rect {
+        top: shifted(frame.top, y)?,
+        left: shifted(frame.left, x)?,
+        bottom: shifted(frame.bottom, y)?,
+        right: shifted(frame.right, x)?,
+    })
+}
+
+/// Select named frames from a complete saved frame table.
+fn select_supplied_frames(
+    available: &[(usize, Rect)],
+    requested: &[usize],
+) -> anyhow::Result<Vec<(usize, Rect)>> {
+    if requested.is_empty() {
+        return Ok(available.to_vec());
+    }
+    requested
+        .iter()
+        .map(|&index| {
+            available
+                .iter()
+                .find(|(frame, _)| *frame == index)
+                .copied()
+                .ok_or(anyhow!(
+                    "Requested frame {} not available. Saved frames: {}",
+                    index,
+                    available.len()
+                ))
+        })
+        .collect()
+}
+
+fn frame_offset_axes(offset: &[i32]) -> (i32, i32) {
+    match offset {
+        [] => (0_i32, 0_i32),
+        [x, y] => (*x, *y),
+        _ => unreachable!("clap accepts exactly two values for --frame-offset"),
+    }
 }
 
 async fn setup_records(session: &mut Session) -> Vec<(Channel, Vec<u8>)> {
@@ -705,5 +813,71 @@ impl Report for ProgressBar {
         // it is set every time rather than once
         self.set_length(progress.total);
         self.set_position(progress.bytes);
+    }
+}
+
+#[cfg(test)]
+mod frame_offset_tests {
+    use super::*;
+
+    #[test]
+    fn moves_a_frame_without_changing_its_size() {
+        let original = Rect {
+            top: 100,
+            left: 200,
+            bottom: 300,
+            right: 500,
+        };
+        let moved = offset_frame(original, &[-20, 30]).unwrap();
+        assert_eq!(
+            moved,
+            Rect {
+                top: 130,
+                left: 180,
+                bottom: 330,
+                right: 480
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_an_offset_before_zero() {
+        let original = Rect {
+            top: 5,
+            left: 5,
+            bottom: 10,
+            right: 10,
+        };
+        assert!(offset_frame(original, &[-6, 0]).is_err());
+    }
+
+    #[test]
+    fn accepts_a_negative_feed_offset_that_stays_in_range() {
+        let original = Rect {
+            top: 100,
+            left: 20,
+            bottom: 300,
+            right: 220,
+        };
+        let moved = offset_frame(original, &[0, -40]).unwrap();
+        assert_eq!(moved.top, 60);
+        assert_eq!(moved.bottom, 260);
+    }
+
+    #[test]
+    fn a_saved_table_keeps_every_frame_while_only_named_frames_scan() {
+        let rect = |top| Rect {
+            top,
+            left: 0,
+            bottom: top + 100,
+            right: 40,
+        };
+        let available = vec![(1, rect(10)), (2, rect(110)), (3, rect(210))];
+
+        assert_eq!(
+            select_supplied_frames(&available, &[3, 1]).unwrap(),
+            vec![(3, rect(210)), (1, rect(10))]
+        );
+        assert!(select_supplied_frames(&available, &[4]).is_err());
     }
 }
