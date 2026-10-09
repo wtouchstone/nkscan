@@ -939,6 +939,7 @@ impl PySession {
 
                 let mut buf = Samples::default();
                 let options = frame::Options {
+                    refocus_before_scan: false,
                     overscan,
                     exposures: locked.as_ref(),
                     metering,

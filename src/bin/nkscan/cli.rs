@@ -113,6 +113,25 @@ pub struct Scan {
     #[arg(long, num_args = 3, value_names = ["RED", "GREEN", "BLUE"])]
     pub exposure: Vec<u32>,
 
+    /// Autofocus at this X Y point inside each frame. Values run from 0 at the
+    /// top or left edge to 1 at the bottom or right edge.
+    #[arg(
+        long,
+        num_args = 2,
+        value_names = ["X", "Y"],
+        value_parser = parse_focus_fraction,
+        conflicts_with = "focus_position"
+    )]
+    pub focus: Vec<f32>,
+
+    /// Move the lens to this absolute position and skip autofocus
+    #[arg(long, conflicts_with = "focus")]
+    pub focus_position: Option<u16>,
+
+    /// Run autofocus again after metering, immediately before each full scan
+    #[arg(long)]
+    pub refocus_before_scan: bool,
+
     /// Resolution. Defaults to scanner maximum.
     #[arg(long)]
     pub dpi: Option<u16>,
@@ -178,10 +197,36 @@ pub fn parse_log_level(flag: &str) -> Result<LevelFilter, String> {
         .map_err(|_| format!("'{flag}' is not a valid log level (expected one of: trace, debug, info, warn, error, off)"))
 }
 
+/// A focus coordinate is a fraction of the detected frame size
+fn parse_focus_fraction(flag: &str) -> Result<f32, String> {
+    let value: f32 = flag
+        .parse()
+        .map_err(|_| format!("'{flag}' is not a number from 0 to 1"))?;
+    if (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!("'{flag}' is outside 0 to 1"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Action, Cli};
+    use super::{Action, Cli, parse_focus_fraction};
     use clap::Parser;
+
+    #[test]
+    fn focus_fractions_include_both_edges() {
+        assert_eq!(parse_focus_fraction("0"), Ok(0.0));
+        assert_eq!(parse_focus_fraction("0.25"), Ok(0.25));
+        assert_eq!(parse_focus_fraction("1"), Ok(1.0));
+    }
+
+    #[test]
+    fn focus_fractions_reject_values_outside_the_frame() {
+        assert!(parse_focus_fraction("-0.1").is_err());
+        assert!(parse_focus_fraction("1.1").is_err());
+        assert!(parse_focus_fraction("center").is_err());
+    }
 
     #[test]
     fn overscan_is_a_nonnegative_address_margin() {

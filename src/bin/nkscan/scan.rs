@@ -119,6 +119,9 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
         meter: save_meter,
         nikon_meter,
         exposure,
+        focus,
+        focus_position,
+        refocus_before_scan,
         dpi,
         samples,
         superfine,
@@ -181,6 +184,15 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
     // the thumbnail pass and the stage move that would otherwise come first
     recipe.supported(session.capabilities())?;
     let hold_white_balance = hold_white_balance(film, unlock_wb, lock_wb);
+    let focus = match (focus_position, focus.as_slice()) {
+        (Some(position), _) => Focus::At(position),
+        (None, [x, y]) => Focus::Auto {
+            at: (*x, *y),
+            color: None,
+        },
+        (None, []) => Focus::default(),
+        _ => unreachable!("clap accepts exactly two values for --focus"),
+    };
 
     // State for the first frame's exposures, reused for the rest so a strip comes out consistent rather than per-frame optimal
     let mut locked = if exposure.is_empty() {
@@ -309,6 +321,8 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
             let mut shown = 0;
 
             let options = frame::Options {
+                focus,
+                refocus_before_scan,
                 overscan,
                 exposures: locked.as_ref(),
                 metering,
@@ -318,7 +332,6 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
                     cli::CleanQuality::Normal => nkscan::dust::Quality::Normal,
                     cli::CleanQuality::Fine => nkscan::dust::Quality::Fine,
                 },
-                focus: Focus::default(),
             };
             let setup_before = if save_meter {
                 setup_records(session).await

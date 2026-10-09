@@ -41,6 +41,8 @@ pub struct Options<'a> {
     pub clean: bool,
     /// How to focus before the pass
     pub focus: Focus,
+    /// nkcolor: autofocus again after metering, just before the full pass
+    pub refocus_before_scan: bool,
     /// nkcolor: scanner-address units added around the full pass on a unit
     /// that addresses the film with the window. Focus and metering use `frame`
     pub overscan: u32,
@@ -127,6 +129,10 @@ pub async fn scan_frame_with(
                     (metered.exposures, Some(metered.evidence))
                 }
             };
+
+            if options.refocus_before_scan && matches!(options.focus, Focus::Auto { .. }) {
+                focus_on(session, frame, options.focus).await?;
+            }
 
             let mut windows = recipe.windows(session.capabilities(), scan_rect)?;
             exposures.apply(&mut windows);
