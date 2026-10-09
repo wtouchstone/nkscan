@@ -103,6 +103,8 @@ impl FilmFormat {
     pub fn from_holder(holder_id: u8) -> Option<Self> {
         match holder_id {
             0x12 => Some(Self::F16),  // FH-816
+            0x14 => Some(Self::F135), // FH-835M
+            0x15 => Some(Self::F135), // FH-835S
             0x19 => Some(Self::F645), // FH-869GR 6×4.5
             0x1A => Some(Self::F66),  // FH-869GR 6×6
             0x1B => Some(Self::F67),  // FH-869GR 6×7
@@ -118,8 +120,6 @@ impl FilmFormat {
     /// or is unknown. Used to offer the operator a choice
     pub fn choices_for_holder(holder_id: u8) -> Option<&'static [Self]> {
         match holder_id {
-            0x14 => Some(&[Self::F66, Self::F67, Self::F69]), // FH-835M
-            0x15 => Some(&[Self::F66, Self::F67, Self::F69]), // FH-835S
             0x16 => Some(&[Self::F66, Self::F67, Self::F69]), // FH-869M
             0x17 => Some(&[Self::F66, Self::F67, Self::F69]), // FH-869S
             0x18 => Some(&[Self::F66, Self::F67, Self::F69]), // FH-869G
@@ -287,6 +287,8 @@ mod tests {
 
     #[test]
     fn gr_holder_fixes_format() {
+        assert_eq!(FilmFormat::from_holder(0x14), Some(FilmFormat::F135));
+        assert_eq!(FilmFormat::from_holder(0x15), Some(FilmFormat::F135));
         assert_eq!(FilmFormat::from_holder(0x1A), Some(FilmFormat::F66));
         assert_eq!(FilmFormat::from_holder(0x1D), Some(FilmFormat::F69));
         assert_eq!(FilmFormat::from_holder(0x17), None);
