@@ -1,4 +1,9 @@
 /target
+.DS_Store
+__pycache__/
+.pytest_cache/
+dist/
+build/
 .direnv
 *.tiff
 !tests/fixtures/**/*.tiff
