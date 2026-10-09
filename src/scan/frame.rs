@@ -1,6 +1,7 @@
 //! Scanning one frame: focus, meter, take the pass, and optionally clean it
 
 use crate::{
+    dust,
     error::Error,
     protocol::{data::Rect, decode::Samples},
     scan::{
@@ -40,6 +41,8 @@ pub struct Options<'a> {
     pub clean: bool,
     /// How to focus before the pass
     pub focus: Focus,
+    /// nkcolor: normal or fine dust reconstruction
+    pub clean_quality: dust::Quality,
 }
 
 /// What one frame's scan produced
@@ -107,7 +110,14 @@ pub async fn scan_frame_with(
 
     let cleaned = options
         .clean
-        .then(|| clean_frame(samples, &pass, session.capabilities().identity.model()))
+        .then(|| {
+            clean_frame(
+                samples,
+                &pass,
+                session.capabilities().identity.model(),
+                options.clean_quality,
+            )
+        })
         .transpose()?;
 
     Ok(Scanned {

@@ -122,6 +122,7 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
         frames,
         ir,
         clean,
+        clean_quality,
         no_eject,
         thumbnail: save_thumbnail,
         format,
@@ -290,6 +291,10 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
                 exposures: locked.as_ref(),
                 metering,
                 clean,
+                clean_quality: match clean_quality {
+                    cli::CleanQuality::Normal => nkscan::dust::Quality::Normal,
+                    cli::CleanQuality::Fine => nkscan::dust::Quality::Fine,
+                },
                 focus: Focus::default(),
             };
             let scanned = frame::scan_frame_with(

@@ -104,6 +104,10 @@ pub struct Scan {
     #[arg(long)]
     pub clean: bool,
 
+    /// Dust reconstruction quality. Fine also rebuilds clean pixels.
+    #[arg(long, value_enum, default_value_t = CleanQuality::Normal, requires = "clean")]
+    pub clean_quality: CleanQuality,
+
     /// Don't eject at the end of the strip
     #[arg(long)]
     pub no_eject: bool,
@@ -121,8 +125,33 @@ pub struct Scan {
     pub film: Film,
 }
 
+/// How nkscan applies its built-in infrared reconstruction.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, clap::ValueEnum, Default)]
+pub enum CleanQuality {
+    #[default]
+    Normal,
+    Fine,
+}
+
 /// A log level flag, by name
 pub fn parse_log_level(flag: &str) -> Result<LevelFilter, String> {
     flag.parse()
         .map_err(|_| format!("'{flag}' is not a valid log level (expected one of: trace, debug, info, warn, error, off)"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Action, Cli};
+    use clap::Parser;
+
+    #[test]
+    fn built_in_cleaning_accepts_fine_quality() {
+        let cli =
+            Cli::try_parse_from(["nkscan", "scan", "--clean", "--clean-quality", "fine"]).unwrap();
+        let Action::Scan(scan) = cli.action else {
+            panic!("scan action");
+        };
+        assert!(scan.clean);
+        assert_eq!(scan.clean_quality, super::CleanQuality::Fine);
+    }
 }

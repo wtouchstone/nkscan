@@ -11,6 +11,23 @@ use tracing::*;
 /// About how many pixels calibration wants to measure over
 const PRESCAN_PIXELS: usize = 2_500_000;
 
+/// Select the dust profile for the named scanner family.
+fn profile_for(model: Option<Model>) -> Result<dust::Model, Error> {
+    match model {
+        Some(Model::Ls8000 | Model::Ls9000) => Ok(dust::Model::Ls9000),
+        Some(Model::Ls5000) => Ok(dust::Model::Ls5000),
+        Some(Model::Ls50) => Ok(dust::Model::Ls50),
+        Some(model) => Err(Error::Unsupported {
+            op: "clean",
+            reason: format!("no verified dust profile for {}", model.name()),
+        }),
+        None => Err(Error::Unsupported {
+            op: "clean",
+            reason: "no verified dust profile for an unrecognized scanner".into(),
+        }),
+    }
+}
+
 /// Every `step`th pixel of a plane, which is all calibration needs
 fn decimate(plane: &[u16], cols: usize, step: usize) -> Vec<u16> {
     let rows = plane.len() / cols;
@@ -28,6 +45,7 @@ pub fn clean_frame(
     samples: &mut Samples,
     pass: &Pass,
     model: Option<Model>,
+    quality: dust::Quality,
 ) -> Result<usize, Error> {
     // The buffer holds the pass's color channels in the stream's own order
     let ids: Vec<u8> = pass.layout.colors().collect();
@@ -40,13 +58,10 @@ pub fn clean_frame(
         });
     };
 
-    let model = model.map(dust::Model::from).unwrap_or_else(|| {
-        warn!("unrecognized scanner, cleaning with a default profile");
-        dust::Model::Ls9000
-    });
+    let model = profile_for(model)?;
     let opts = dust::Options {
         model,
-        quality: dust::Quality::Normal,
+        quality,
         dpi: pass.layout.dpi,
     };
 
@@ -95,4 +110,21 @@ pub fn clean_frame(
         pass.cols,
         &opts,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ls8000_uses_the_medium_format_dust_profile() {
+        assert_eq!(
+            profile_for(Some(Model::Ls9000)).unwrap(),
+            dust::Model::Ls9000
+        );
+        assert_eq!(
+            profile_for(Some(Model::Ls8000)).unwrap(),
+            dust::Model::Ls9000
+        );
+    }
 }
