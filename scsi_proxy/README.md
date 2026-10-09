@@ -1,19 +1,26 @@
-# NKDSBP2.dll Proxy — SCSI CDB Capture
+# Nikon transport proxies — SCSI and builder capture
 
-Windows proxy DLL that intercepts SCSI traffic between Nikon Scan and the
-scanner. Used to capture the exact CDBs (especially SET WINDOW)
-the Nikon driver sends.
+The Windows proxy DLLs intercept traffic between Nikon Scan and the scanner.
+`NKDUSCAN.dll` covers USB. `NKDSBP2.dll` covers FireWire. They save every SCSI
+exchange and each call to the selected scanner module's negative table builder.
+
+The real transport DLL is loaded on the first `NkDriverEntry` call. It is not
+loaded from `DllMain`, where Windows holds the loader lock. For asynchronous
+scanner reads, the proxy preserves the original `ERROR_IO_PENDING` result and
+never reads a transfer buffer that is still in use by the scanner.
 
 ## Install
 
-1. On the Windows machine hosting the scanner, find the real NKDSBP2.dll
+1. On the Windows machine hosting the scanner, find the real transport DLL
    (Nikon Scan installs it to
    `C:\Program Files (x86)\Common Files\Nikon\MaidMods\Scanners\`).
-2. Rename it: `NKDSBP2.dll` -> `Nkdsbp2_real.dll`.
-3. Copy the proxy `NKDSBP2.dll` next to `Nkdsbp2_real.dll`.
-4. Run Nikon Scan (proably as administrator), trigger a scan (preview or full).
+2. Rename it to `NKDSBP2_real.dll` or `NKDUSCAN_real.dll`.
+3. Copy the matching proxy beside the renamed DLL.
+4. Run Nikon Scan as administrator and trigger a preview or full scan.
 It would be useful to keep a log of the actions you perform in Nikon Scan and any buttons your press/settings you apply.
-5. Check `C:\scsi_trace.log` for the CDB trace.
+5. Check `C:\nkduscan_scsi_trace.log` or
+   `C:\nkdsbp2_scsi_trace.log` for the command trace. Set `NIKON_CAPTURE_DIR`
+   before Nikon Scan starts to select another directory.
 
 Please note that if you contribute these logs, they will contain image data, so make sure you don't send something sensitive.
 
@@ -21,13 +28,20 @@ Please note that if you contribute these logs, they will contain image data, so 
 
 The proxy writes **two files**:
 
-- `C:\scsi_trace.log` — human-readable text (for eyeballing). Its per-line
+- `C:\<transport>_scsi_trace.log` — human-readable text. Its per-line
   hex dumps are still capped at ~160 bytes, so large payloads are truncated
   here.
-- `C:\scsi_trace.bin` — **complete, untruncated** binary records of every
+- `C:\<transport>_scsi_trace.bin` — **complete, untruncated** binary records of every
   IOCTL_SCSISCAN_CMD exchange. This is the one to keep: it captures the full
   32 KB LUT writes and image reads that the text log truncates. Format in
   the "Binary trace format" section below.
+
+It also writes `nikon_builder_NNNN.bin` for each negative-builder call. The
+default build targets `LS5000.md3:0x10011840`. Define
+`PROXY_BUILDER_LS8000=1` to target `LS8000.md3:0x10012690`. Each file contains
+the exact descriptor before and after the call, the meter pixels, the
+1,024-byte characteristic resource, the function result, and the generated LUT
+bytes.
 
 The proxy hooks **two layers** and writes both to the text log:
 
@@ -51,9 +65,15 @@ The proxy cross-compiles to i686 Windows with the MinGW toolchain. A
 dedicated cross-compiler is needed for i686-w64-mingw32-gcc.
 
 ```bash
-cd tools/scsi_proxy
-i686-w64-mingw32-gcc -shared -O2 -Wall -o NKDSBP2.dll \
-    proxy.c -lkernel32 -Wl,--enable-stdcall-fixup nkdsbp2.def
+i686-w64-mingw32-gcc -shared -O2 -Wall -o NKDSBP2.dll proxy.c \
+    -DPROXY_REAL_DLL='"NKDSBP2_real.dll"' -DPROXY_LABEL='"NKDSBP2.dll"' \
+    -DPROXY_TRACE_PREFIX='"nkdsbp2"' \
+    -lkernel32 -Wl,--enable-stdcall-fixup nkdsbp2.def
+
+i686-w64-mingw32-gcc -shared -O2 -Wall -o NKDUSCAN.dll proxy.c \
+    -DPROXY_REAL_DLL='"NKDUSCAN_real.dll"' -DPROXY_LABEL='"NKDUSCAN.dll"' \
+    -DPROXY_TRACE_PREFIX='"nkduscan"' \
+    -lkernel32 -Wl,--enable-stdcall-fixup nkduscan.def
 ```
 
 The build produces a 34 KB PE32 i386 DLL. Dependency profile: imports from
