@@ -39,6 +39,28 @@ pub enum Action {
     Dump(Dump),
     /// Eject the loaded film or holder
     Eject(Eject),
+    /// Clean a saved scan with its infrared file. No scanner needed.
+    Clean(Clean),
+}
+
+/// Clean a saved 16-bit RGB scan with the infrared file saved beside it
+#[derive(clap::Args)]
+pub struct Clean {
+    /// 16-bit RGB scan file, as the scanner delivered it
+    pub rgb: PathBuf,
+    /// 16-bit single-sample infrared file saved beside it
+    pub ir: PathBuf,
+    /// Scanner model, for example "LS-50 ED"
+    #[arg(long)]
+    pub model: String,
+    /// Scan resolution, as the meter record reports it
+    #[arg(long, default_value_t = 4000)]
+    pub dpi: u32,
+    /// Dust reconstruction quality
+    #[arg(long, value_enum, default_value_t = CleanQuality::Normal)]
+    pub quality: CleanQuality,
+    /// Where to write the cleaned 16-bit RGB image
+    pub out: PathBuf,
 }
 
 /// Eject the loaded film or holder

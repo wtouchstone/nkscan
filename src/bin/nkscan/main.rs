@@ -6,6 +6,7 @@ use tracing_subscriber::EnvFilter;
 
 mod cache;
 mod cancel;
+mod clean;
 mod cli;
 mod dump;
 mod eject;
@@ -76,6 +77,7 @@ fn main() -> anyhow::Result<()> {
         }
         cli::Action::Dump(args) => pollster::block_on(dump::run(args))?,
         cli::Action::Eject(args) => pollster::block_on(eject::run(args))?,
+        cli::Action::Clean(args) => clean::run(args)?,
     }
 
     // Donezo
