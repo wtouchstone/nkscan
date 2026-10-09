@@ -41,6 +41,9 @@ pub struct Options<'a> {
     pub clean: bool,
     /// How to focus before the pass
     pub focus: Focus,
+    /// nkcolor: scanner-address units added around the full pass on a unit
+    /// that addresses the film with the window. Focus and metering use `frame`
+    pub overscan: u32,
     /// nkcolor: meter as a color negative with the rule a Nikon Scan capture
     /// verifies on this unit, whatever `metering.film` says. Refused on a unit
     /// [`meter::nikon_negative_supported`] does not name
@@ -107,6 +110,7 @@ pub async fn scan_frame_with(
         metering.film = crate::scan::profile::Film::Negative;
         metering.lock_white_balance = false;
     }
+    let scan_rect = framing::overscan_rect(session.capabilities(), frame, options.overscan)?;
 
     let (pass, exposures, metering, windows, focused, focus_position) =
         at_frame(session, frame, async |session| {
@@ -124,7 +128,7 @@ pub async fn scan_frame_with(
                 }
             };
 
-            let mut windows = recipe.windows(session.capabilities(), frame)?;
+            let mut windows = recipe.windows(session.capabilities(), scan_rect)?;
             exposures.apply(&mut windows);
 
             let pass = session

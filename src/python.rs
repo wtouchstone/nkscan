@@ -882,6 +882,7 @@ impl PySession {
         exposures=None,
         focus=None,
         progress=None,
+        overscan=0,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn scan_frame(
@@ -903,6 +904,7 @@ impl PySession {
         #[gen_stub(override_type(type_repr = "typing.Optional[typing.Union[builtins.int, tuple[builtins.float, builtins.float], typing.Literal['auto', 'hold']]]", imports = ("builtins", "typing")))]
         focus: Option<Bound<'_, PyAny>>,
         progress: Option<Py<PyAny>>,
+        overscan: u32,
     ) -> PyResult<PyScanResult> {
         if infrared && clean {
             return Err(PyValueError::new_err(
@@ -942,6 +944,7 @@ impl PySession {
 
                 let mut buf = Samples::default();
                 let options = frame::Options {
+                    overscan,
                     exposures: locked.as_ref(),
                     metering,
                     nikon_negative_meter,
