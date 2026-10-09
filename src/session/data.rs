@@ -285,12 +285,18 @@ impl Session {
     /// 2-11-7, `DataType::Setup`, per color. Holds the base level and, for each
     /// image, what a prescan decided. Survives across sessions
     pub async fn setup(&mut self, color: u8) -> Result<data::Setup, Error> {
-        let (_, values) = self.read_data(data::DataType::Setup, color).await?;
-        let data::Values::Bytes(record) = values else {
-            return Err(malformed("Setup did not come back as bytes".into()));
-        };
+        let record = self.setup_record(color).await?;
         data::Setup::from_bytes(&record)
             .ok_or_else(|| malformed(format!("Setup was {} bytes", record.len())))
+    }
+
+    /// The exact payload of the unit's 8Dh setup record for one color
+    ///
+    /// Capture tools keep this beside the parsed values so later work can
+    /// inspect bytes that the current parser does not yet name.
+    pub async fn setup_record(&mut self, color: u8) -> Result<Vec<u8>, Error> {
+        let (_, record) = self.read_record(data::DataType::Setup, color).await?;
+        Ok(record)
     }
 
     /// Read the CCD's own response curves once and cache them on the session
