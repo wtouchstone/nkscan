@@ -422,3 +422,17 @@ impl SetWindow {
         [0x24, 0, 0, 0, 0, 0, hi, mid, lo, VENDOR]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Execute, SetParameter};
+
+    #[test]
+    fn shading_uses_the_documented_operation_and_nine_byte_parameter_block() {
+        assert_eq!(
+            SetParameter::new(0xB0, 9).cdb(),
+            [0xE0, 0, 0xB0, 0, 0, 0, 0, 0, 9, 0]
+        );
+        assert_eq!(Execute.cdb(), [0xC1, 0, 0, 0, 0, 0]);
+    }
+}
