@@ -143,6 +143,20 @@ pub async fn scan_frame_with(
             Ok((pass, exposures, evidence, windows, focused, focus_position))
         })
         .await?;
+    info!(
+        "NKSCAN_FRAME_POSITION submitted={}:{}:{}:{} overscan={} pass={}:{}:{}:{} complete={} blocks={}",
+        frame.top,
+        frame.left,
+        frame.bottom,
+        frame.right,
+        options.overscan,
+        scan_rect.top,
+        scan_rect.left,
+        scan_rect.bottom,
+        scan_rect.right,
+        pass.complete,
+        pass.blocks,
+    );
 
     // nkcolor publishes nothing from a pass that ended early: the unused part
     // of the sample buffer is padding, not film
