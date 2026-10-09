@@ -46,7 +46,30 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <stdint.h>
 #include <string.h>
+
+#ifndef PROXY_REAL_DLL
+#define PROXY_REAL_DLL "Nkdsbp2_real.dll"
+#endif
+
+#ifndef PROXY_LABEL
+#define PROXY_LABEL "NKDSBP2.dll"
+#endif
+
+#ifndef PROXY_TRACE_PREFIX
+#define PROXY_TRACE_PREFIX "nkdsbp2"
+#endif
+
+/* The LS-8000 verification proxy records commands without delaying Nikon's
+ * asynchronous reads or inspecting MAID buffers. The older LS-5000 research
+ * build can opt into those invasive captures explicitly. */
+#ifndef PROXY_WAIT_FOR_DATA_IN
+#define PROXY_WAIT_FOR_DATA_IN 1
+#endif
+#ifndef PROXY_TRANSPORT_ONLY
+#define PROXY_TRANSPORT_ONLY 0
+#endif
 
 /* GetProcAddress returns FARPROC; casting to a specific function pointer type
  * is the documented usage but trips -Wcast-function-type. */
@@ -80,8 +103,44 @@ typedef struct {
 /* --- Globals --- */
 static HANDLE g_logFile = INVALID_HANDLE_VALUE;  /* human-readable text trace */
 static HANDLE g_binFile = INVALID_HANDLE_VALUE;  /* full binary trace (untruncated) */
+static HINSTANCE g_selfDll = NULL;
 static HMODULE g_realDll = NULL;
+/* 0 not started, 1 in progress, 2 ready, -1 failed. The real DLL is loaded
+ * on the first exported call, outside DllMain and the Windows loader lock. */
+static volatile LONG g_initState = 0;
 static DWORD g_seq = 0;  /* monotonic call index for log correlation */
+static char g_captureDir[MAX_PATH] = "C:\\";
+static BOOL g_builderHooked = FALSE;
+static BOOL g_builderAttempted = FALSE;
+static LONG g_builderSeq = 0;
+
+/* Scanner-module addresses, stored as RVAs so relocation does not matter.
+ * Each target is verified against the matching Nikon Scan 4.0.3 module before
+ * its capture package is built. The call-site checks in try_hook_builder keep
+ * a different module revision from being patched at an unknown address. */
+#ifdef PROXY_BUILDER_LS8000
+#define BUILDER_MODULE_NAME "LS8000.md3"
+#define BUILDER_TARGET_NAME "LS-8000"
+#define NIKON_BUILDER_RVA 0x00012690
+#else
+#define BUILDER_MODULE_NAME "LS5000.md3"
+#define BUILDER_TARGET_NAME "LS-5000"
+#define NIKON_BUILDER_RVA 0x00011840
+#endif
+#define BUILDER_DESCRIPTOR_SIZE 0x84
+#ifdef PROXY_BUILDER_LS8000
+static const DWORD g_builderCallRvas[] = {
+    0x0003E552, 0x0003EEEB, 0x0008665B,
+    0x00086973, 0x00086EB0, 0x0008B4FF
+};
+#else
+static const DWORD g_builderCallRvas[] = {
+    0x00040AA5, 0x00041944, 0x0008A965, 0x0008AC71
+};
+#endif
+
+typedef int (__cdecl *pNikonBuilder)(void *descriptor);
+static pNikonBuilder g_realNikonBuilder = NULL;
 
 /* Real DeviceIoControl pointer (resolved via GetProcAddress; IAT slot is
  * overwritten to point at our hook). */
@@ -124,6 +183,190 @@ static void log_hex(const char *prefix, const BYTE *data, int len) {
     DWORD written;
     WriteFile(g_logFile, line, pos, &written, NULL);
     FlushFileBuffers(g_logFile);
+}
+
+static void capture_path(char *out, const char *name) {
+    lstrcpynA(out, g_captureDir, MAX_PATH);
+    size_t len = strlen(out);
+    if (len > 0 && out[len - 1] != '\\' && out[len - 1] != '/') {
+        lstrcatA(out, "\\");
+    }
+    lstrcatA(out, name);
+}
+
+static HANDLE open_capture(const char *name, DWORD disposition) {
+    char path[MAX_PATH];
+    capture_path(path, name);
+    return CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                       disposition, FILE_ATTRIBUTE_NORMAL, NULL);
+}
+
+static void write_bytes(HANDLE file, const void *data, DWORD length) {
+    DWORD written;
+    if (file != INVALID_HANDLE_VALUE && data && length) {
+        WriteFile(file, data, length, &written, NULL);
+    }
+}
+
+static DWORD descriptor_u32(const BYTE *descriptor, DWORD offset) {
+    DWORD value = 0;
+    memcpy(&value, descriptor + offset, sizeof(value));
+    return value;
+}
+
+static const BYTE *descriptor_ptr(const BYTE *descriptor, DWORD offset) {
+    DWORD value = descriptor_u32(descriptor, offset);
+    return (const BYTE *)(UINT_PTR)value;
+}
+
+/* Exact interleaved or planar pixel span read by both Nikon builders. */
+static DWORD builder_pixel_bytes(const BYTE *descriptor) {
+    uint64_t width = descriptor_u32(descriptor, 0x00);
+    uint64_t height = descriptor_u32(descriptor, 0x04);
+    uint64_t stride = descriptor_u32(descriptor, 0x78);
+    DWORD bits = descriptor_u32(descriptor, 0x7C);
+    DWORD planar = descriptor_u32(descriptor, 0x80);
+    uint64_t samples;
+    uint64_t bytes;
+
+    if (!width || !height || !stride || (bits != 8 && bits != 16)) return 0;
+    if (planar == 1) {
+        samples = (height - 1) * width * stride + 3 * width;
+    } else {
+        samples = (width * height - 1) * stride + 3;
+    }
+    bytes = samples * (bits == 8 ? 1 : 2);
+    if (bytes > 512ULL * 1024ULL * 1024ULL) return 0;
+    return (DWORD)bytes;
+}
+
+/*
+ * One file per call to the selected scanner module's negative builder.
+ *
+ *   "NBLD" u32 version u32 sequence
+ *   u32 descriptor_before_len, descriptor_before
+ *   u32 meter_pixels_len, meter_pixels
+ *   u32 characteristic_len, characteristic
+ *   i32 result
+ *   u32 descriptor_after_len, descriptor_after
+ *   u32 lut_len, lut_bytes
+ */
+static int __cdecl hookedNikonBuilder(void *argument) {
+    BYTE before[BUILDER_DESCRIPTOR_SIZE] = {0};
+    BYTE after[BUILDER_DESCRIPTOR_SIZE] = {0};
+    BYTE *descriptor = (BYTE *)argument;
+    DWORD sequence = (DWORD)InterlockedIncrement(&g_builderSeq);
+    DWORD descriptorLen = 0;
+    DWORD pixelsLen = 0;
+    DWORD characteristicLen = 0;
+    DWORD lutLen = 0;
+    const BYTE *pixels = NULL;
+    const BYTE *characteristic = NULL;
+    const BYTE *luts = NULL;
+    char name[64];
+    HANDLE file;
+    int result;
+    DWORD version = 1;
+
+    if (descriptor && !IsBadReadPtr(descriptor, BUILDER_DESCRIPTOR_SIZE)) {
+        memcpy(before, descriptor, BUILDER_DESCRIPTOR_SIZE);
+        descriptorLen = BUILDER_DESCRIPTOR_SIZE;
+        pixelsLen = builder_pixel_bytes(before);
+        pixels = descriptor_ptr(before, 0x18);
+        if (!pixels || (pixelsLen && IsBadReadPtr(pixels, pixelsLen))) pixelsLen = 0;
+        characteristic = descriptor_ptr(before, 0x58);
+        if (characteristic && !IsBadReadPtr(characteristic, 0x400)) {
+            characteristicLen = 0x400;
+        }
+    }
+
+    wsprintfA(name, "nikon_builder_%04lu.bin", sequence);
+    file = open_capture(name, CREATE_ALWAYS);
+    write_bytes(file, "NBLD", 4);
+    write_bytes(file, &version, sizeof(version));
+    write_bytes(file, &sequence, sizeof(sequence));
+    write_bytes(file, &descriptorLen, sizeof(descriptorLen));
+    write_bytes(file, before, descriptorLen);
+    write_bytes(file, &pixelsLen, sizeof(pixelsLen));
+    write_bytes(file, pixels, pixelsLen);
+    write_bytes(file, &characteristicLen, sizeof(characteristicLen));
+    write_bytes(file, characteristic, characteristicLen);
+
+    result = g_realNikonBuilder ? g_realNikonBuilder(argument) : 3;
+
+    if (descriptor && !IsBadReadPtr(descriptor, BUILDER_DESCRIPTOR_SIZE)) {
+        memcpy(after, descriptor, BUILDER_DESCRIPTOR_SIZE);
+        descriptorLen = BUILDER_DESCRIPTOR_SIZE;
+        lutLen = descriptor_u32(after, 0x64);
+        luts = descriptor_ptr(after, 0x68);
+        if (lutLen > 16 * 1024 * 1024 || !luts || IsBadReadPtr(luts, lutLen)) lutLen = 0;
+    } else {
+        descriptorLen = 0;
+    }
+    write_bytes(file, &result, sizeof(result));
+    write_bytes(file, &descriptorLen, sizeof(descriptorLen));
+    write_bytes(file, after, descriptorLen);
+    write_bytes(file, &lutLen, sizeof(lutLen));
+    write_bytes(file, luts, lutLen);
+    if (file != INVALID_HANDLE_VALUE) {
+        FlushFileBuffers(file);
+        CloseHandle(file);
+    }
+
+    log_write("Nikon builder capture %lu: result=%d pixels=%lu LUT=%lu\r\n",
+              sequence, result, pixelsLen, lutLen);
+    return result;
+}
+
+/* Replace the direct calls to the builder. The function itself remains
+ * untouched, so the hook can call it without a trampoline. */
+static void try_hook_builder(void) {
+    HMODULE module;
+    BYTE *base;
+    BYTE *builder;
+    size_t hooked = 0;
+
+    if (g_builderHooked || g_builderAttempted) return;
+    module = GetModuleHandleA(BUILDER_MODULE_NAME);
+    if (!module) return;
+    g_builderAttempted = TRUE;
+    base = (BYTE *)module;
+    builder = base + NIKON_BUILDER_RVA;
+    g_realNikonBuilder = (pNikonBuilder)builder;
+
+    for (size_t i = 0; i < sizeof(g_builderCallRvas) / sizeof(g_builderCallRvas[0]); i++) {
+        BYTE *site = base + g_builderCallRvas[i];
+        int32_t oldRel;
+        int32_t newRel;
+        BYTE *oldTarget;
+        DWORD oldProtect;
+
+        if (site[0] != 0xE8) continue;
+        memcpy(&oldRel, site + 1, sizeof(oldRel));
+        oldTarget = site + 5 + oldRel;
+        if (oldTarget == (BYTE *)hookedNikonBuilder) {
+            hooked++;
+            continue;
+        }
+        if (oldTarget != builder) continue;
+        newRel = (int32_t)((BYTE *)hookedNikonBuilder - (site + 5));
+        if (!VirtualProtect(site, 5, PAGE_EXECUTE_READWRITE, &oldProtect)) continue;
+        memcpy(site + 1, &newRel, sizeof(newRel));
+        VirtualProtect(site, 5, oldProtect, &oldProtect);
+        FlushInstructionCache(GetCurrentProcess(), site, 5);
+        hooked++;
+    }
+
+    if (hooked == sizeof(g_builderCallRvas) / sizeof(g_builderCallRvas[0])) {
+        g_builderHooked = TRUE;
+        log_write("%s builder hook installed at 0x%08X\r\n",
+                  BUILDER_TARGET_NAME, (DWORD)(UINT_PTR)builder);
+    } else {
+        log_write("ERROR: %s builder hook matched %d of %d call sites; no retry will be attempted\r\n",
+                  BUILDER_TARGET_NAME,
+                  (int)hooked,
+                  (int)(sizeof(g_builderCallRvas) / sizeof(g_builderCallRvas[0])));
+    }
 }
 
 /* Append one COMPLETE SCSI exchange to the binary trace — no truncation, so
@@ -250,17 +493,19 @@ static BOOL WINAPI hookedDeviceIoControl(
          * Polling never touches it: the OS still signals the event/file
          * handle on its own, so the caller's own wait afterward sees it
          * completed normally, exactly as with the real DLL. */
-        if (isDataIn && !result && lpOverlapped) {
+        BOOL dataInComplete = result || !isDataIn || !lpOverlapped;
+        if (PROXY_WAIT_FOR_DATA_IN && isDataIn && !result && lpOverlapped) {
+            dataInComplete = TRUE;
             DWORD start = GetTickCount();
             while (!HasOverlappedIoCompleted(lpOverlapped)) {
                 /* A thumbnail READ can take more than 10 s */
                 if (GetTickCount() - start > 600000) {
                     log_write("  WARNING: overlapped read still pending after 600 s, buffer not captured\r\n");
+                    dataInComplete = FALSE;
                     break;
                 }
                 Sleep(1);
             }
-            savedErr = GetLastError();
         }
 
         /* actualLen = the TRUE number of bytes the device wrote into
@@ -279,8 +524,12 @@ static BOOL WINAPI hookedDeviceIoControl(
         DWORD actualLen = cmd->TransferLength;
         if (isDataIn) {
             if (!result && lpOverlapped) {
-                if (HasOverlappedIoCompleted(lpOverlapped)) {
+                if (dataInComplete && HasOverlappedIoCompleted(lpOverlapped)) {
                     actualLen = (DWORD)lpOverlapped->InternalHigh;
+                } else {
+                    /* Do not read a buffer while the scanner can still be
+                     * writing it. The caller remains responsible for waiting. */
+                    actualLen = 0;
                 }
             } else if (lpBytesReturned) {
                 actualLen = *lpBytesReturned;
@@ -348,8 +597,8 @@ static BOOL WINAPI hookedDeviceIoControl(
         savedErr = GetLastError();
     }
 
-    /* Restore whatever last-error the real call (or our completion poll)
-     * produced, undoing any clobbering from the logging calls above. */
+    /* Restore the real call's last-error. The caller must still see
+     * ERROR_IO_PENDING after our observation-only completion poll. */
     SetLastError(savedErr);
     return result;
 }
@@ -416,18 +665,84 @@ static void hookIatDeviceIoControl(HMODULE hMod) {
               matchedDlls);
 }
 
+static BOOL buildRealDllPath(HINSTANCE hinstDLL, char *outPath, DWORD outPathSize);
+
+/* Load and hook the real transport outside DllMain. LoadLibrary from DllMain
+ * runs under the loader lock and can deadlock or terminate Nikon Scan. */
+static BOOL ensure_initialized(void) {
+    LONG state = InterlockedCompareExchange(&g_initState, 1, 0);
+    if (state == 2) return TRUE;
+    if (state == -1) return FALSE;
+    if (state == 1) {
+        do {
+            Sleep(1);
+            state = InterlockedCompareExchange(&g_initState, 1, 1);
+        } while (state == 1);
+        return state == 2;
+    }
+
+    {
+        DWORD captureLen = GetEnvironmentVariableA(
+            "NIKON_CAPTURE_DIR", g_captureDir, sizeof(g_captureDir));
+        if (captureLen == 0 || captureLen >= sizeof(g_captureDir)) {
+            lstrcpyA(g_captureDir, "C:\\");
+        }
+    }
+    g_logFile = open_capture(PROXY_TRACE_PREFIX "_scsi_trace.log", CREATE_ALWAYS);
+    g_binFile = open_capture(PROXY_TRACE_PREFIX "_scsi_trace.bin", CREATE_ALWAYS);
+    log_write("=== %s proxy (complete SCSI capture) ===\r\n", PROXY_LABEL);
+    log_write("Capture directory: %s\r\n", g_captureDir);
+    log_write("SCSISCAN_CMD size=%d  IOCTL=0x%08X\r\n",
+              (int)sizeof(SCSISCAN_CMD), (DWORD)IOCTL_SCSISCAN_CMD);
+
+    {
+        char path[MAX_PATH];
+        if (buildRealDllPath(g_selfDll, path, sizeof(path))) {
+            log_write("Real DLL: %s\r\n", path);
+            g_realDll = LoadLibraryA(path);
+        }
+    }
+    if (!g_realDll) g_realDll = LoadLibraryA(PROXY_REAL_DLL);
+    if (!g_realDll) {
+        log_write("ERROR: Could not load %s, GetLastError=%d\r\n",
+                  PROXY_REAL_DLL, GetLastError());
+        InterlockedExchange(&g_initState, -1);
+        return FALSE;
+    }
+    log_write("Loaded real DLL at 0x%08X\r\n", (DWORD)(UINT_PTR)g_realDll);
+
+    g_realNkDriverEntry = (pNkDriverEntry)GetProcAddress(g_realDll, "NkDriverEntry");
+    if (!g_realNkDriverEntry)
+        g_realNkDriverEntry = (pNkDriverEntry)GetProcAddress(g_realDll, (LPCSTR)1);
+    if (!g_realNkDriverEntry) {
+        log_write("ERROR: NkDriverEntry not found in real DLL\r\n");
+        InterlockedExchange(&g_initState, -1);
+        return FALSE;
+    }
+    log_write("NkDriverEntry: 0x%08X\r\n", (DWORD)(UINT_PTR)g_realNkDriverEntry);
+    hookIatDeviceIoControl(g_realDll);
+    log_write("=== Ready ===\r\n\r\n");
+    InterlockedExchange(&g_initState, 2);
+    return TRUE;
+}
+
 /* --- Exported NkDriverEntry (3 params, __stdcall) ---
  * Forwards to the real DLL and logs the high-level call for correlation with
  * the CDB trace below. */
 __declspec(dllexport) int WINAPI NkDriverEntry(DWORD op, DWORD param2, DWORD param3)
 {
+    if (!ensure_initialized()) return -1;
     DWORD seq = ++g_seq;
+
+    if (!PROXY_TRANSPORT_ONLY) try_hook_builder();
 
     if (g_logFile != INVALID_HANDLE_VALUE) {
         log_write("[#%lu] NkDriverEntry(op=%d, param2=0x%X, param3=0x%X)\r\n",
             seq, op, param2, param3);
-        if (param2 > 0x10000) log_hex("  param2", (BYTE *)param2, 64);
-        if (param3 > 0x10000 && param3 != param2) log_hex("  param3", (BYTE *)param3, 64);
+        if (!PROXY_TRANSPORT_ONLY && param2 > 0x10000)
+            log_hex("  param2", (BYTE *)param2, 64);
+        if (!PROXY_TRANSPORT_ONLY && param3 > 0x10000 && param3 != param2)
+            log_hex("  param3", (BYTE *)param3, 64);
     }
 
     if (!g_realNkDriverEntry) return -1;
@@ -435,7 +750,8 @@ __declspec(dllexport) int WINAPI NkDriverEntry(DWORD op, DWORD param2, DWORD par
     int result = g_realNkDriverEntry(op, param2, param3);
     if (g_logFile != INVALID_HANDLE_VALUE) {
         log_write("  -> result=%d\r\n", result);
-        if (op >= 2 && param3 > 0x10000) log_hex("  param3 (post)", (BYTE *)param3, 64);
+        if (!PROXY_TRANSPORT_ONLY && op >= 2 && param3 > 0x10000)
+            log_hex("  param3 (post)", (BYTE *)param3, 64);
     }
     return result;
 }
@@ -450,61 +766,21 @@ static BOOL buildRealDllPath(HINSTANCE hinstDLL, char *outPath, DWORD outPathSiz
     if (!slash) return FALSE;
     *(slash + 1) = '\0';
     lstrcpynA(outPath, path, outPathSize);
-    lstrcatA(outPath, "Nkdsbp2_real.dll");
+    lstrcatA(outPath, PROXY_REAL_DLL);
     return TRUE;
 }
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     (void)lpvReserved;
     switch (fdwReason) {
-    case DLL_PROCESS_ATTACH: {
-        g_logFile = CreateFileA("C:\\scsi_trace.log",
-            GENERIC_WRITE, FILE_SHARE_READ, NULL,
-            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        g_binFile = CreateFileA("C:\\scsi_trace.bin",
-            GENERIC_WRITE, FILE_SHARE_READ, NULL,
-            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-
-        log_write("=== NKDSBP2.dll proxy (IAT-hook build) ===\r\n");
-        log_write("SCSISCAN_CMD size=%d  IOCTL=0x%08X\r\n",
-            (int)sizeof(SCSISCAN_CMD), (DWORD)IOCTL_SCSISCAN_CMD);
-
-        char path[MAX_PATH];
-        if (buildRealDllPath(hinstDLL, path, sizeof(path))) {
-            log_write("Real DLL: %s\r\n", path);
-            g_realDll = LoadLibraryA(path);
-        }
-        if (!g_realDll) g_realDll = LoadLibraryA("Nkdsbp2_real.dll");
-        if (!g_realDll) {
-            log_write("ERROR: Could not load Nkdsbp2_real.dll, GetLastError=%d\r\n", GetLastError());
-            log_write("=== Proxy unloaded (load failure) ===\r\n");
-            CloseHandle(g_logFile);
-            g_logFile = INVALID_HANDLE_VALUE;
-            return FALSE;
-        }
-        log_write("Loaded real DLL at 0x%08X\r\n", (DWORD)(UINT_PTR)g_realDll);
-
-        g_realNkDriverEntry = (pNkDriverEntry)GetProcAddress(g_realDll, "NkDriverEntry");
-        if (!g_realNkDriverEntry)
-            g_realNkDriverEntry = (pNkDriverEntry)GetProcAddress(g_realDll, (LPCSTR)1);
-        if (!g_realNkDriverEntry) {
-            log_write("ERROR: NkDriverEntry not found in real DLL\r\n");
-            return FALSE;
-        }
-        log_write("NkDriverEntry: 0x%08X\r\n", (DWORD)(UINT_PTR)g_realNkDriverEntry);
-
-        /* IAT-hook DeviceIoControl in the REAL DLL only. Must run AFTER the
-         * real DLL is loaded so its IAT is bound. */
-        hookIatDeviceIoControl(g_realDll);
-
-        log_write("=== Ready ===\r\n\r\n");
+    case DLL_PROCESS_ATTACH:
+        g_selfDll = hinstDLL;
+        DisableThreadLibraryCalls(hinstDLL);
         break;
-    }
     case DLL_PROCESS_DETACH:
         log_write("=== Proxy unloaded (seq=%lu) ===\r\n", g_seq);
         if (g_logFile != INVALID_HANDLE_VALUE) CloseHandle(g_logFile);
         if (g_binFile != INVALID_HANDLE_VALUE) CloseHandle(g_binFile);
-        if (g_realDll) FreeLibrary(g_realDll);
         break;
     }
     return TRUE;

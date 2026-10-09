@@ -1,0 +1,3 @@
+LIBRARY NKDUSCAN.dll
+EXPORTS
+    NkDriverEntry @1
