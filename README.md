@@ -1,260 +1,107 @@
-# nkscan
-
-[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/activexray/nkscan/ci.yml)](https://github.com/activexray/nkscan/actions/workflows/ci.yml)
-[![Crates.io Version](https://img.shields.io/crates/v/nkscan)](https://crates.io/crates/nkscan)
-[![docs.rs](https://img.shields.io/docsrs/nkscan)](https://docs.rs/nkscan)
-[![PyPI Version](https://img.shields.io/pypi/v/nkscan)](https://pypi.org/project/nkscan/)
-
-A cross-platform and performant driver for Nikon (Coolscan) film scanners.
-
-## Installation
-
-There is no installer, just grab a binary for your system from the [releases](https://github.com/activexray/nkscan/releases/latest).
-
-The MacOS binaries are not signed, so Gatekeeper will trigger and will prevent it from running.
-Clear that with `xattr -d com.apple.quarantine nkscan-aarch64-apple-darwin`, or build from source instead.
-
-### Building from Source
-
-If you have a rust toolchain installed, you can install straight from crates.io via
-
-```bash
-cargo install nkscan --features cli --locked
-```
-
-which will put `nkscan` on your path.
-
-Otherwise, clone the repo and `cargo build --release --features cli`.
-
-If you have nix installed, you can build with `nix build`.
-We have the package defined in the flake, so you can add this to your personal config, if you wish.
-
-### Python
-
-To use the library from Python, install it with `pip install nkscan`.
-Refer to [PYTHON.md](PYTHON.md) for the API and examples.
-
-## Example
-
-Say I'm batch scanning 6x6 color negatives on my Coolscan 9000 (the only Nikon scanner attached to my computer).
-I usually do 2x multisampling at the full native resolution with an IR pass.
-Additionally, I'll "lock" the exposure from the first frame so every frame is exposed the same off the scanner so I can perform roll analysis when I invert.
-To do this and scan my whole roll (with the program prompting between strips), I'd run
-
-``` bash
-nkscan scan --lock-ae --samples 2 --ir --format 66
-```
-
-Use `--meter` to keep every decoded meter pass and its exposure record. It also
-keeps the exact scanner window descriptors and raw 8Dh setup records needed to
-replay or compare the acquisition.
-Use `--nikon-meter` with `--meter --film negative` to run the LS-5000
-four-pass negative exposure sequence recovered from Nikon Scan. This option
-uses Nikon's first-pass exposure table, analyzer rectangle, color filter, and
-final exposure rule.
-Use `--exposure RED GREEN BLUE` to skip metering and apply three known exposure
-values to the full scan.
-Use `--focus X Y` to select the autofocus point inside each frame. `0 0` is the
-top-left corner. `1 1` is the bottom-right corner. Use
-`--focus-position POSITION` to move the lens to an exact position and skip
-autofocus.
-Use `--frame-offset X Y` to move a detected frame without changing its size.
-Both values can be negative when the moved rectangle stays inside the scanner
-address range. A perforation-framed scanner measures the picture during
-metering and centers it inside the full scan range. It keeps the requested
-frame offset when it applies that correction.
-Use `--overscan UNITS` to add a margin around a negative scan on a scanner
-that addresses the film directly. The meter and detected frame stay unchanged.
-The units are the scanner's maximum-resolution address units. Perforation-
-framed scanners already scan the full gate and reject this option.
-
-![demo gif](docs/demo.gif)
-
-## Options
-
-<details>
-<summary><code>nkscan scan --help</code></summary>
-
-```
-Perform a scan. Defaults to batch scanning with sensible defaults
-
-Usage: nkscan scan [OPTIONS] [DEVICE]
-
-Arguments:
-  [DEVICE]
-          The scanner to connect to. Optional, will default to the first found
-
-Options:
-      --basename <BASENAME>
-          Where to write, as a path prefix. Each frame becomes <basename>_<n>.tiff, and its infrared mask <basename>_<n>_IR.tiff
-          
-          [default: scan]
-
-      --unlock-wb
-          Autoexpose per channel, taking the film's own cast off. The default for color negative, where that cast is the orange mask
-
-      --lock-wb
-          Autoexpose the channels as one, keeping the film's cast and the factory balance. The default for slide, Kodachrome and black and white
-
-      --lock-ae
-          Autoexpose the first frame and reuse that exposure across all frames
-
-      --dpi <DPI>
-          Resolution. Defaults to scanner maximum
-
-      --log <LOG>
-          Log verbosity: trace, debug, info, warn, error, or off
-          
-          [default: info]
-
-      --samples <SAMPLES>
-          Number of samples. Defaults to 1
-          
-          [default: 1]
-
-      --superfine
-          Singleline CCD mode. Only supported on multiline CCD scanners
-
-      --frames <FRAMES>
-          Which frame(s) to scan, comma separated. Defaults to all detected. Naming any stops after one holder rather than batching
-
-      --ir
-          Include the IR pass
-
-      --clean
-          Remove dust and scratches using the infrared channel
-
-      --no-eject
-          Don't eject at the end of the strip
-
-      --thumbnail
-          Keep the framing thumbnail as <basename>_<n>_thumbnail.tiff, on units that support this
-
-      --format <FORMAT>
-          Film format. One of: 135, half, IX240, 16, 645, 66, 67, 68, 69, or a custom frame length in mm (LS-8000/9000 only, up to 83 mm). Defaults to what the holder reports (if any)
-
-      --film <FILM>
-          Film type, which picks the color profile the scans are tagged with
-
-          Possible values:
-          - positive:   Slide film
-          - negative:   Color negative
-          - kodachrome: Kodachrome, whose dyes need their own profile
-          - mono:       Black and white negative
-          
-          [default: negative]
-
-  -h, --help
-          Print help (see a summary with '-h')
-```
-
-</details>
-
-## Support
-
-Our goal is to support all the scanners supported by Nikon Scan, which are enumerated here by testing status.
-This library doesn't have anything scanner or adapter-specific so *theoretically* it should work across devices.
-
-If you test with a ⚠️-marked scanner/adapter combo and it works, please send a PR indicating support!
-
-- ✅ Supported, and run against real hardware
-- ⚠️ Untested but theoretically should work
-
-### Medium Format Scanners
-
-| Scanner \ Holder | 835M | 835S | 869S  | 869G  | 869GR  | 869M | 816 | 8G1 |
-|------------------|:----:|:----:|:-----:|:-----:|:------:|:----:|:---:|:---:|
-| Super Coolscan 9000 (LS-9000 ED)   | ⚠️  |  ✅   | ✅   | ⚠️   |  ⚠️   |  ⚠️ | ⚠️ |  ⚠️ |
-| Super Coolscan 8000 (LS-8000 ED)   | ⚠️  |  ⚠️   | ✅   | ✅   |  ⚠️   |  ⚠️ | ⚠️ |  ⚠️ |
-
-### 35mm Scanners
-
-| Scanner \ Holder                    | SA-21  | IA-20/21  | MA-20/21   | SA-30  | SF-210/200  |
-|-------------------------------------|:------:|:---------:|:----------:|:------:|:-----------:|
-| Super Coolscan 5000 (LS-5000 ED)    |   ✅   |  ⚠️      |    ✅     |  ✅    |   ⚠️       |
-| Super Coolscan 4000 (LS-4000 ED)    |   ✅   |  ⚠️      |    ⚠️     |  ✅    |   ⚠️       |
-| Coolscan V (LS-50 ED)               |   ✅   |  ✅      |    ✅     |  ✅    |   ✅       |
-| Coolscan IV (LS-40 ED)              |   ✅   |  ⚠️      |    ✅     |  ⚠️    |   ⚠️       |
-
-If you want to use a Firewire scanner on an old Mac that still has OS support for FireWire, let me know and I can scope it out.
-It is technically possible, but getting Rust to compile a binary for older MacOS is not something I have experience in.
-You could also just like, install Linux on it :)
-
-### USB Scanner Drivers
-
-We use [nusb](https://github.com/kevinmehall/nusb), which is a pure-Rust alternative to libusb, but it carries the same invariants.
-On Windows, this means you need to associate your device with a WinUSB driver.
-The most popular way to do this is with [Zadig](https://zadig.akeo.ie/).
-
-On Linux, make sure you have the appropriate udev rules set up. Nusb has some [help](https://docs.rs/nusb/latest/nusb/#linux) on this.
-
-MacOS *should* just work.
-
-### Browser
-
-The library also builds for `wasm32-unknown-unknown` and drives USB scanners over [WebUSB](https://wicg.github.io/webusb/) in Chromium-based browsers.
-Call `device::request` from a click to show the browser's device chooser.
-On Windows, the scanner needs the WinUSB driver here too.
-FireWire scanners do not work in a browser.
-
-### FireWire Drivers
-
-Things *should* just work on Linux (assuming you've got the [SG](https://www.kernel.org/doc/html/latest/scsi/scsi-generic.html) module loaded) and Windows.
-MacOS dropped support for FireWire in Tahoe, but the open source [ASFireWire](https://github.com/mrmidi/ASFireWire) project brings it back on Apple Silicon as a third-party dext.
-nkscan is tested and verified to work well with ASFireWire.
-If you have an older mac with FireWire on it, you could just install Linux and have an OS that respects your freedom.
-
-## Design Notes
-
-This library is written from the ground up following the official Nikon spec of the wire protocol for the LS-5000 and LS-9000 ED scanners (located in docs/).
-Comparing the two, we find an identical protocol.
-Some types are absent in one but not the other, some lists capabilities the other doesn't have, but all of the bits and bytes are in the same position across all the data.
-This implies we don't need any model or holder specifics, we can just read what the scanner advertises as its capabilities and work from there (for the most part).
-This means (hopefully) we can support every scanner and every holder with a single codebase (although please test and let me know)!
-
-The code is broken down into several layers of independent abstractions
-- Transport: Defines what moving SCSI bytes is for the different OSes and physical layer (USB/FireWire)
-- Protocol: An implementation of the Nikon spec via serialization and deserialization of bytes as they come off the wire. This module does no IO and is just byte-oriented.
-- Session: Combines a trait object of the Transport (type erasure) with the methods from Protocol. This wraps scanner state (like global units) and provides functions that essentially perform the spec's listed actions.
-- Scan: Combine the methods from Session to perform high-level scan operations. This asks the scanner what it can do and then orders session operations to do it.
-
-### RE: LLMs
-
-I'd rather spend money on film than on tokens.
-While LLMs helped with the production of some of this crate, it was largely written by hand and not vibe-coded.
-If you contribute, please adhere to the [contribution guide](CONTRIBUTING.md).
-
-### Why Rust
-
-I'm impatient and don't have time for runtimes, garbage collection, and dumb compilers.
-I like types, memory safety, correctness, and speed.
-Rust's model fits this better than any language, plus it has great tooling and libraries for the low-level programming in this crate.
-For the CLI user, you get one ~5MB binary and *that's it*, no messing around.
-I'm not super interested in a GUI right now, but that's the library part of this code base.
-Please go make one (hopefully also in Rust)!
-
-## License
-
-Dual licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
-
-Except for the ICC profiles in [profiles/](profiles/README.md), which are
-derived from Nikon's and are not ours to license.
-
-Unless you explicitly state otherwise, any contribution intentionally submitted for
-inclusion in this work by you, as defined in the Apache-2.0 license, shall be dual licensed
-as above, without any additional terms or conditions.
-
-## Related Projects and References
-
-- [coolscanpy](https://github.com/rohanpandula/coolscanpy/)
-- [Coolscan RE](https://github.com/kevihiiin/Nikon-Coolscan-RE)
-- [coolscan-mods](https://github.com/kosma/coolscan-mods)
-- [sane-coolscan3](http://sane-project.org/man/sane-coolscan3.5.html)
-- [openICE](https://github.com/a6o/openICE)
-- [digital fauxice](https://github.com/rohanpandula/digital-fauxice)
-- [ScanStudio](https://github.com/rohanpandula/ScanStudio)
+# nkscan (nkcolor fork)
+
+This is nkscan with additional changes for exact Nikon conversion and some QOL
+improvements.
+
+Upstream is [activexray/nkscan](https://github.com/activexray/nkscan). Its
+documentation covers everything not listed here. NKCOLOR.md has the technical
+detail for each change.
+
+## Changes for exact Nikon conversion
+
+**Nikon's negative metering** (`scan --nikon-meter`, Python
+`nikon_negative_meter=True`)
+Upstream meters the way Nikon Scan does. This option meters as a color negative
+and refuses a scanner that no Nikon Scan capture checks: it runs only on the
+LS-50, LS-5000 and LS-8000. On those three the final exposure matches Nikon
+Scan's to the count. Nikon's color conversion depends on the exposure it chose,
+so we have to choose the same one to get the same result.
+
+**LS-8000 metering curve**
+The LS-8000 uses its own film curve and its own form of Nikon's analyzer.
+Upstream uses the LS-9000 curve on every medium-format scanner. The fork adds
+the LS-8000 form, so the LS-8000 gets Nikon Scan's exposures.
+
+**Saved meter data** (`scan --meter`, Python `meter_passes`)
+Keeps every meter image, the exposure of each pass, the exact scanner settings
+sent for each pass, and the scanner's setup records. Our software rebuilds
+Nikon's conversion from these files. Without them the result can only be an
+estimate.
+
+**Capture proxy** (`scsi_proxy/`)
+A small DLL that sits between Nikon Scan and the scanner driver and records
+every command, for USB and FireWire scanners. It also records the inputs and
+output of Nikon's color table builder. This is how we check our results against
+Nikon Scan itself.
+
+## Quality of life
+
+**Scan with known exposures** (`--exposure R G B`)
+Repeats an earlier exposure without metering again, so a roll or a re-scan
+comes out the same.
+
+**Choose the focus** (`--focus X Y`, `--focus-position`, `--refocus-before-scan`)
+Autofocus on a chosen point of the frame, drive the lens to a known position,
+or focus again just before the scan.
+
+**Reuse frame positions** (`--frame-rect-for`)
+Scans frames that an earlier thumbnail already found, without another thumbnail
+pass.
+
+**Move a frame** (`--frame-offset`, `--frame-offset-for`)
+Shifts a frame along or across the film when the detected position is off.
+
+**Overscan** (`--overscan`)
+Scans a margin around the frame on scanners that address the film directly,
+such as the LS-8000.
+
+**Super Fine pair** (`--superfine-pair`)
+Scans the same frame in the normal mode and in Super Fine, for comparison.
+
+**Better dust cleaning** (`--clean-quality normal|fine`)
+Uses the right dust profile for each scanner model, including the LS-8000, and
+offers Nikon's Fine setting.
+
+**Clean a saved scan** (`nkscan clean`, Python `clean_rgb_ir`)
+Runs dust cleaning later on a scan saved with its infrared plane, without the
+scanner.
+
+**Cleaning and infrared output are exclusive**
+`--clean` and `--ir` cannot be used together. Cleaning uses the infrared plane
+itself; to clean later, save the infrared plane instead.
+
+**Short scans fail**
+A scan that ends before the frame is complete stops with an error and writes
+no file, rather than writing an image with missing rows.
+
+**LS-8000 autofocus on a moved frame**
+The LS-8000 refused to focus on a frame moved past its detected place. The
+moved frame now goes into the scanner's frame table for the autofocus.
+
+**LS-8000 metering**
+The LS-8000 reports automatic exposure features it does not really have. The
+computer now meters, as Nikon Scan does on this model.
+
+**LS-50 strip adapter span**
+Some strip adapters report a length of zero before the first thumbnail. The
+thumbnail now uses the length the scanner documentation gives.
+
+**FH-835M and FH-835S holders**
+These are 35 mm holders, so the film format is set automatically.
+
+**Calibrate** (`nkscan calibrate`, Python `calibrate_shading()`)
+Nikon Scan's Calibrate button. The scanner measures its light source again,
+which fixes streaks along the direction the film travels. It runs only when
+asked, as in Nikon Scan, and can take about two minutes on the LS-8000.
+`Capabilities.calibrate` says whether a scanner offers it.
+
+**Progress and logs for the web app**
+`NKSCAN_PROGRESS_LINES=1` prints progress the app can read. Extra log lines
+record each frame's position, each scanner setting, the focus mode, and why a
+scanner failed to open.
+
+**Python additions**
+`Capabilities.exposure_range` and `calibrate`, `Discovery.thumbnail_bounds` and
+`thumbnail_frames`, `ScanResult.meter_passes`, and `clean_rgb_ir`. Older
+calls from our web app (`scan_frame(positive=, frame_offset=)`,
+`focus_frame(at=)`) still work.
