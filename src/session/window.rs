@@ -103,11 +103,28 @@ impl Session {
         payload.extend_from_slice(&window.to_bytes());
 
         let cmd = SetWindow::new(payload.len() as u32);
-        debug!(
-            id = window.id,
-            ?window.origin,
-            ?window.size,
-            "setting window"
+        let cdb = cmd.cdb();
+        let payload_hex: Vec<String> = payload.iter().map(|b| format!("{b:02X}")).collect();
+        info!(
+            "NKSCAN_SET_WINDOW id={} dpi={}x{} origin={}x{} size={}x{} bpp={} flags={:#04x} kind={:#04x} mode={:#04x} interleaving={:#04x} exposure={} cdb={} payload={}",
+            window.id,
+            window.resolution.0,
+            window.resolution.1,
+            window.origin.0,
+            window.origin.1,
+            window.size.0,
+            window.size.1,
+            window.bpp,
+            window.flags.bits(),
+            window.scanning_kind.bits(),
+            window.scanning_mode.bits(),
+            window.color_interleaving.bits(),
+            window.exposure,
+            cdb.iter()
+                .map(|b| format!("{b:02X}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            payload_hex.join(" "),
         );
         // The descriptor is the one place a pass's geometry actually lives, so
         // it is what a capture of another driver has to be compared against
@@ -117,7 +134,7 @@ impl Session {
         }
         // setting windows is not a cooperative action
         self.transport
-            .execute(&cmd.cdb(), Data::Out(&payload), MOVE_TIMEOUT)
+            .execute(&cdb, Data::Out(&payload), MOVE_TIMEOUT)
             .await?;
 
         Ok(())
