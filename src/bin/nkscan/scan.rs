@@ -349,6 +349,8 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
             warn!("No frames on this strip");
         }
 
+        let machine_progress = std::env::var_os("NKSCAN_PROGRESS_LINES").is_some();
+
         // Scan each frame
         for (n, (source_frame, detected, frame, adjustment)) in
             selected_frames.into_iter().enumerate()
@@ -406,6 +408,19 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
                 options,
                 &mut samples,
                 |phase, p| {
+                    if machine_progress {
+                        let phase_name = match phase {
+                            Phase::Meter(_) => "meter",
+                            Phase::Scan => "scan",
+                        };
+                        eprintln!(
+                            "NKSCAN_PROGRESS frame={} phase={} bytes={} total={}",
+                            n + 1,
+                            phase_name,
+                            p.bytes,
+                            p.total
+                        );
+                    }
                     match phase {
                         Phase::Meter(pass) => {
                             // A pass does not know how long it is until its
