@@ -45,6 +45,29 @@ To do this and scan my whole roll (with the program prompting between strips), I
 nkscan scan --lock-ae --samples 2 --ir --format 66
 ```
 
+Use `--meter` to keep every decoded meter pass and its exposure record. It also
+keeps the exact scanner window descriptors and raw 8Dh setup records needed to
+replay or compare the acquisition.
+Use `--nikon-meter` with `--meter --film negative` to run the LS-5000
+four-pass negative exposure sequence recovered from Nikon Scan. This option
+uses Nikon's first-pass exposure table, analyzer rectangle, color filter, and
+final exposure rule.
+Use `--exposure RED GREEN BLUE` to skip metering and apply three known exposure
+values to the full scan.
+Use `--focus X Y` to select the autofocus point inside each frame. `0 0` is the
+top-left corner. `1 1` is the bottom-right corner. Use
+`--focus-position POSITION` to move the lens to an exact position and skip
+autofocus.
+Use `--frame-offset X Y` to move a detected frame without changing its size.
+Both values can be negative when the moved rectangle stays inside the scanner
+address range. A perforation-framed scanner measures the picture during
+metering and centers it inside the full scan range. It keeps the requested
+frame offset when it applies that correction.
+Use `--overscan UNITS` to add a margin around a negative scan on a scanner
+that addresses the film directly. The meter and detected frame stay unchanged.
+The units are the scanner's maximum-resolution address units. Perforation-
+framed scanners already scan the full gate and reject this option.
+
 ![demo gif](docs/demo.gif)
 
 ## Options

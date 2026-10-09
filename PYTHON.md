@@ -45,6 +45,11 @@ print(result.dpi, red.shape, red.dtype)
 session.close()  # or use Session as a context manager
 ```
 
+`scan_frame(overscan=...)` adds that many maximum-resolution scanner address
+units around the final negative scan. It does not expand the meter image or
+change the detected frame. Perforation-framed scanners already scan the full
+gate and reject a nonzero value.
+
 ## What the scanner can do
 
 `session.capabilities` reports what the attached unit offers, so a GUI can hide controls it does not have rather than failing once a scan is under way.
@@ -65,7 +70,7 @@ if not caps.film_formats:
     hide("film format")      # the holder sets the format, or the framing uses none
 ```
 
-`x_dpi_range`, `y_dpi_range`, `focus_range`, `max_samples` and `max_frames` bound the controls that take a number. `framing` says how frames are found ("published", "thumbnail", "perforation" or "address"), and `interleavings` lists the reading modes offered.
+`x_dpi_range`, `y_dpi_range`, `focus_range`, `max_samples` and `max_frames` bound the controls that take a number. `x_boundary` and `y_boundary` give the full scanner-address size of the current gate. `framing` says how frames are found ("published", "thumbnail", "perforation" or "address"), and `interleavings` lists the reading modes offered.
 
 `film_formats` lists the formats to offer for the loaded holder or adapter, as `discover_frames` takes them. It is empty where the holder or adapter sets the format. `film_format` is the format it sets, or `None`.
 
@@ -127,6 +132,24 @@ for frame in frames:
 icc = session.nikon_profile("negative")
 ```
 
+## Nikon negative metering
+
+nkcolor: pass `nikon_negative_meter=True` to meter as a color negative with the
+rule a Nikon Scan capture verifies on this scanner. Only the LS-50, LS-5000 and
+LS-8000 accept it; other scanners raise `UnsupportedError`. It overrides `film`
+and `lock_white_balance` for metering. On the LS-8000, negatives are metered with
+the LS-8000 film curve.
+
+The result keeps the meter images. `result.meter_passes` contains one item for
+each pass. Each item has `colors`, `ir`, `dpi`, `rows`, `cols`, `exposures` and
+`analyzer_rect`. The exposure values are the values that produced those pixels.
+`analyzer_rect` is the measured rectangle, inclusive: first line, first pixel,
+last line, last pixel. Lines run along the feed, and pixels run along the
+sensor from the far end, as in Nikon Scan's builder image.
+`result.meter_startup_exposures` contains the scanner values that seeded the
+first pass. `result.exposures` contains the values selected for the full scan.
+If the caller supplies `exposures`, the meter list is empty.
+
 ## Nudging frames by hand
 
 `scan_frame` scans the rectangle it is given. The pass is that rectangle at both
@@ -177,6 +200,10 @@ Nikon Scan shows in that column. On these units, Nikon Scan lets a frame move
 `discovery.addresses_per_column` is the spacing of evenly spaced columns, and
 `None` on a unit that counts perforations.
 
+nkcolor: `discovery.thumbnail_frames` gives `(start, end, extent)` for each frame
+on a perforation-framed unit: the columns of `column_addresses` nearest its top
+and bottom, and its feed extent.
+
 ## Progress and cancellation
 
 Both `discover_frames` and `scan_frame` take a `progress` callback.
@@ -200,6 +227,13 @@ nkscan.init_logging("off")
 ```
 
 `RUST_LOG` overrides `level`, and can set it per module, for example `nkscan::cdb=trace`.
+
+## Saved-scan dust removal
+
+`clean_rgb_ir(rgb, infrared, model, dpi=4000, quality="normal")` applies the
+same dust-removal path to saved 16-bit pixels. `rgb` must have shape H by W by
+3. `infrared` must have shape H by W. The function returns the cleaned RGB
+array and the number of rebuilt pixels. `quality` accepts `normal` or `fine`.
 
 ## Errors
 
