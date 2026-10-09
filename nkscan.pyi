@@ -21,6 +21,7 @@ __all__ = [
     "TransientError",
     "TransportError",
     "UnsupportedError",
+    "clean_rgb_ir",
     "init_logging",
     "list_devices",
 ]
@@ -448,6 +449,11 @@ class UnsupportedError(ScannerError):
     This unit or adapter cannot do that. Carries `.op` and `.reason`
     """
     ...
+
+def clean_rgb_ir(rgb: numpy.typing.NDArray[numpy.uint16], infrared: numpy.typing.NDArray[numpy.uint16], model: builtins.str, dpi: builtins.int = 4000, quality: builtins.str = 'normal') -> tuple[numpy.typing.NDArray[numpy.uint16], builtins.int]:
+    r"""
+    Remove infrared-detected defects from a saved RGB image.
+    """
 
 def init_logging(level: typing.Optional[builtins.str] = None, path: typing.Optional[builtins.str | os.PathLike | pathlib.Path] = None) -> None:
     r"""

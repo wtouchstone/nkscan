@@ -7,6 +7,7 @@
 
 use crate::{
     device::{self, Device as RustDevice},
+    dust,
     error::Error,
     protocol::{
         caps::{
@@ -16,22 +17,25 @@ use crate::{
         },
         data::{Op, Rect},
         decode::Samples,
+        image::Layout,
+        model::Model,
         window::Channel,
     },
     scan::{
         autoexpose::Exposures,
+        clean::clean_frame,
         focus::{Focus, Focused},
         frame::{self, Phase},
         framing::{self, Framing},
         meter::Metering,
-        pass::Progress,
+        pass::{Pass, Progress},
         profile::{self, Film},
         window::{MAX_SAMPLES, Recipe},
     },
     session::{Session as RustSession, block_on},
     transport::Transport,
 };
-use numpy::{IntoPyArray, PyArray2, PyArrayMethods};
+use numpy::{IntoPyArray, PyArray2, PyArray3, PyArrayMethods, PyReadonlyArray2, PyReadonlyArray3};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     prelude::*,
@@ -207,6 +211,92 @@ fn init_logging(level: Option<&str>, path: Option<PathBuf>) -> PyResult<()> {
             *layer.inner_mut().writer_mut() = writer;
         })
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+}
+
+// ----- nkcolor: saved-scan cleaning -----
+
+/// Remove infrared-detected defects from a saved RGB image.
+#[gen_stub_pyfunction]
+#[pyfunction]
+#[pyo3(signature = (rgb, infrared, model, dpi=4000, quality="normal"))]
+fn clean_rgb_ir(
+    py: Python<'_>,
+    rgb: PyReadonlyArray3<'_, u16>,
+    infrared: PyReadonlyArray2<'_, u16>,
+    model: &str,
+    dpi: u32,
+    quality: &str,
+) -> PyResult<(Py<PyArray3<u16>>, usize)> {
+    let rgb = rgb.as_array();
+    let infrared = infrared.as_array();
+    let shape = rgb.shape();
+    if shape.len() != 3 || shape[2] != 3 {
+        return Err(PyValueError::new_err(
+            "rgb must be an H by W by 3 uint16 array",
+        ));
+    }
+    let rows = shape[0];
+    let cols = shape[1];
+    if infrared.shape() != [rows, cols] {
+        return Err(PyValueError::new_err(
+            "infrared must match the RGB height and width",
+        ));
+    }
+    if dpi == 0 {
+        return Err(PyValueError::new_err("dpi must be greater than zero"));
+    }
+    let unit = Model::from_product(model)
+        .ok_or_else(|| PyValueError::new_err(format!("unknown scanner model {model:?}")))?;
+    let quality = match quality.to_ascii_lowercase().as_str() {
+        "normal" => dust::Quality::Normal,
+        "fine" => dust::Quality::Fine,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown dust quality {other:?}"
+            )));
+        }
+    };
+
+    let count = rows
+        .checked_mul(cols)
+        .ok_or_else(|| PyValueError::new_err("the image dimensions are too large"))?;
+    let mut colors: Vec<Vec<u16>> = (0..3).map(|_| Vec::with_capacity(count)).collect();
+    let mut infrared_plane = Vec::with_capacity(count);
+    for row in 0..rows {
+        for col in 0..cols {
+            colors[0].push(rgb[[row, col, 0]]);
+            colors[1].push(rgb[[row, col, 1]]);
+            colors[2].push(rgb[[row, col, 2]]);
+            infrared_plane.push(infrared[[row, col]]);
+        }
+    }
+
+    let (chunky, rebuilt) = py.detach(move || -> Result<(Vec<u16>, usize), Error> {
+        let mut layout = Layout::single_line(cols as u32, rows as u32, vec![1, 2, 3]);
+        layout.dpi = dpi;
+        let pass = Pass {
+            layout,
+            cooperation: Vec::new(),
+            complete: true,
+            blocks: 1,
+            rows,
+            cols,
+        };
+        let mut samples = Samples {
+            colors,
+            ir: Some(infrared_plane),
+        };
+        let rebuilt = clean_frame(&mut samples, &pass, Some(unit), quality)?;
+        let mut chunky = Vec::with_capacity(count * 3);
+        for index in 0..count {
+            chunky.push(samples.colors[0][index]);
+            chunky.push(samples.colors[1][index]);
+            chunky.push(samples.colors[2][index]);
+        }
+        Ok((chunky, rebuilt))
+    })?;
+    let output = chunky.into_pyarray(py).reshape([rows, cols, 3])?.unbind();
+    Ok((output, rebuilt))
 }
 
 // ----- capabilities -----
@@ -1017,6 +1107,7 @@ fn nkscan_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDiscovery>()?;
     m.add_function(wrap_pyfunction!(list_devices, m)?)?;
     m.add_function(wrap_pyfunction!(init_logging, m)?)?;
+    m.add_function(wrap_pyfunction!(clean_rgb_ir, m)?)?;
 
     let py = m.py();
     m.add("ScannerError", py.get_type::<ScannerError>())?;
