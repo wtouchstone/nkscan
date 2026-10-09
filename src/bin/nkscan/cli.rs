@@ -106,8 +106,12 @@ pub struct Scan {
     pub meter: bool,
 
     /// Use Nikon Scan's matching color-negative meter sequence
-    #[arg(long, requires = "meter")]
+    #[arg(long, requires = "meter", conflicts_with = "exposure")]
     pub nikon_meter: bool,
+
+    /// Use these red, green, and blue exposure values instead of metering
+    #[arg(long, num_args = 3, value_names = ["RED", "GREEN", "BLUE"])]
+    pub exposure: Vec<u32>,
 
     /// Resolution. Defaults to scanner maximum.
     #[arg(long)]

@@ -118,6 +118,7 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
         lock_ae,
         meter: save_meter,
         nikon_meter,
+        exposure,
         dpi,
         samples,
         superfine,
@@ -182,7 +183,18 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
     let hold_white_balance = hold_white_balance(film, unlock_wb, lock_wb);
 
     // State for the first frame's exposures, reused for the rest so a strip comes out consistent rather than per-frame optimal
-    let mut locked: Option<Exposures> = None;
+    let mut locked = if exposure.is_empty() {
+        None
+    } else {
+        let mut values = Exposures::default();
+        for (channel, value) in [Channel::Red, Channel::Green, Channel::Blue]
+            .into_iter()
+            .zip(exposure)
+        {
+            values.set(channel, value);
+        }
+        Some(values)
+    };
 
     let uses_adapter = !session.capabilities().identity.is_mf_scanner()
         && session
