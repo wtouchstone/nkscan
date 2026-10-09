@@ -366,7 +366,8 @@ class Session:
         
         `film` and `format` are as for `discover_frames`, and `base_density` is
         `Discovery.base_density`. `lock_white_balance` defaults to
-        `Capabilities.locks_white_balance(film)`
+        `Capabilities.locks_white_balance(film)`. `clean` uses infrared
+        internally and cannot be combined with retained `infrared` output
         """
     def meter_frame(self, frame: tuple[builtins.int, builtins.int, builtins.int, builtins.int], infrared: builtins.bool = False, film: typing.Optional[builtins.str] = None, format: typing.Optional[builtins.str] = None, base_density: typing.Optional[tuple[builtins.float, builtins.float, builtins.float]] = None, lock_white_balance: typing.Optional[builtins.bool] = None, progress: typing.Optional[typing.Any] = None) -> builtins.dict[builtins.str, builtins.int]:
         r"""

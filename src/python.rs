@@ -712,7 +712,8 @@ impl PySession {
     ///
     /// `film` and `format` are as for `discover_frames`, and `base_density` is
     /// `Discovery.base_density`. `lock_white_balance` defaults to
-    /// `Capabilities.locks_white_balance(film)`
+    /// `Capabilities.locks_white_balance(film)`. `clean` uses infrared
+    /// internally and cannot be combined with retained `infrared` output
     #[pyo3(signature = (
         frame,
         dpi=None,
@@ -749,6 +750,11 @@ impl PySession {
         focus: Option<Bound<'_, PyAny>>,
         progress: Option<Py<PyAny>>,
     ) -> PyResult<PyScanResult> {
+        if infrared && clean {
+            return Err(PyValueError::new_err(
+                "infrared retention and dust removal are mutually exclusive",
+            ));
+        }
         let clean_quality = match clean_quality {
             "normal" => crate::dust::Quality::Normal,
             "fine" => crate::dust::Quality::Fine,

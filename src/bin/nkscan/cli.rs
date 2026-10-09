@@ -97,7 +97,7 @@ pub struct Scan {
     pub frames: Vec<usize>,
 
     /// Include the IR pass
-    #[arg(long)]
+    #[arg(long, conflicts_with = "clean")]
     pub ir: bool,
 
     /// Remove dust and scratches using the infrared channel.
@@ -153,5 +153,10 @@ mod tests {
         };
         assert!(scan.clean);
         assert_eq!(scan.clean_quality, super::CleanQuality::Fine);
+    }
+
+    #[test]
+    fn cleaning_and_retained_infrared_are_mutually_exclusive() {
+        assert!(Cli::try_parse_from(["nkscan", "scan", "--clean", "--ir"]).is_err());
     }
 }
