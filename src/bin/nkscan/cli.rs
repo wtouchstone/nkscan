@@ -181,8 +181,17 @@ pub struct Scan {
     pub samples: u8,
 
     /// Singleline CCD mode. Only supported on multiline CCD scanners.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "superfine_pair")]
     pub superfine: bool,
+
+    /// Capture the normal and Super Fine CCD modes from the same prepared
+    /// frame window. The normal file keeps its usual name. The matching file
+    /// uses <basename>_superfine_<n>.tiff.
+    #[arg(
+        long,
+        conflicts_with_all = ["superfine", "ir", "clean"]
+    )]
+    pub superfine_pair: bool,
 
     /// Which frame(s) to scan, comma separated. Defaults to all detected.
     /// Naming any stops after one holder rather than batching.
@@ -366,5 +375,19 @@ mod tests {
     #[test]
     fn cleaning_and_retained_infrared_are_mutually_exclusive() {
         assert!(Cli::try_parse_from(["nkscan", "scan", "--clean", "--ir"]).is_err());
+    }
+
+    #[test]
+    fn a_superfine_pair_keeps_raw_color_inputs_only() {
+        let cli = Cli::try_parse_from(["nkscan", "scan", "--superfine-pair"]).unwrap();
+        let Action::Scan(scan) = cli.action else {
+            panic!("scan action");
+        };
+        assert!(scan.superfine_pair);
+        assert!(
+            Cli::try_parse_from(["nkscan", "scan", "--superfine-pair", "--superfine"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["nkscan", "scan", "--superfine-pair", "--ir"]).is_err());
+        assert!(Cli::try_parse_from(["nkscan", "scan", "--superfine-pair", "--clean"]).is_err());
     }
 }

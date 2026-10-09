@@ -10,14 +10,19 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use nkscan::{
     device,
     error::Error,
-    protocol::{caps::other::DataTypes, data::Rect, decode::Samples, window::Channel},
+    protocol::{
+        caps::{other::DataTypes, set_window::ColorInterleaving},
+        data::Rect,
+        decode::Samples,
+        window::{Channel, Window},
+    },
     scan::{
         autoexpose::Exposures,
         focus::Focus,
         frame::{self, Phase},
         framing::{self, Framing},
         meter::Metering,
-        pass::Progress,
+        pass::{Pass, Progress},
         profile::{self, Film},
         window::Recipe,
     },
@@ -40,6 +45,9 @@ const STILL_THERE: Duration = Duration::from_secs(5);
 
 /// How often the spinner moves while that is going on
 const SPINNER_TICK: Duration = Duration::from_millis(120);
+
+/// Long enough for the slower single-line half of a maximum-size pair.
+const PAIR_SCAN_TIMEOUT: Duration = Duration::from_secs(1800);
 
 /// Scan what the flags ask for
 pub async fn run(args: cli::Scan) -> anyhow::Result<()> {
@@ -125,6 +133,7 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
         dpi,
         samples,
         superfine,
+        superfine_pair,
         frames,
         frame_offset,
         frame_offsets,
@@ -174,6 +183,11 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
     if !superfine && multiline_supported && !multiline_at_dpi {
         info!(
             "at {dpi} dpi all the CCD rows give one output line, so the scan reads one row at a time and takes more time"
+        );
+    }
+    if superfine_pair && !multiline_at_dpi {
+        bail!(
+            "--superfine-pair needs a resolution where this scanner can capture both its normal multi-line mode and Super Fine"
         );
     }
 
@@ -537,6 +551,48 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
                     .collect::<Vec<_>>()
                     .join(", ")
             );
+
+            if superfine_pair {
+                let pair_windows = superfine_windows(&scanned.windows);
+                let pair_pass = scan_superfine_pair(
+                    session,
+                    &pair_windows,
+                    &mut samples,
+                    n + 1,
+                    machine_progress,
+                )
+                .await?;
+                if pair_pass.blocks == 0 {
+                    bail!("the unit gave nothing for Super Fine frame {}", n + 1);
+                }
+                if !pair_pass.complete {
+                    bail!(
+                        "the unit stopped before Super Fine frame {} was complete; no image was written",
+                        n + 1
+                    );
+                }
+                samples.to_full_scale(pair_pass.layout.bits_per_sample);
+                let pair_basename =
+                    std::path::PathBuf::from(format!("{}_superfine", basename.display()));
+                let pair_written = io::write_frame(
+                    &pair_basename,
+                    first + n,
+                    &samples,
+                    &pair_pass,
+                    icc,
+                    film == Film::MonochromeNegative,
+                    false,
+                )?;
+                info!(
+                    frame = n + 1,
+                    "Super Fine pair used the same window, exposure, focus, and scanner session; wrote {}",
+                    pair_written
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
         }
 
         if no_eject {
@@ -589,6 +645,63 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
         wait_for_film(session, prompt, cartridge).await?;
     }
     Ok(())
+}
+
+/// Change only the CCD row-selection field of a prepared normal scan.
+///
+/// The frame rectangle, exposure, focus position, samples, and scan mode stay
+/// fixed. This matches Nikon Scan's captured distinction between normal and
+/// Super Fine at 4000 dpi.
+fn superfine_windows(windows: &[Window]) -> Vec<Window> {
+    windows
+        .iter()
+        .cloned()
+        .map(|mut window| {
+            window.color_interleaving = ColorInterleaving::LINE_WITHOUT_DISTANCE;
+            window
+        })
+        .collect()
+}
+
+/// Take the second half of a matched normal/Super Fine pair.
+///
+/// The caller has already written the normal pixels. Reusing its buffer keeps
+/// peak memory at one full frame. The scanner stays open and reserved for both
+/// passes. A full image pass must move the holder through the gate, so the two
+/// TIFFs can still need a small pixel registration before comparison.
+async fn scan_superfine_pair(
+    session: &mut Session,
+    windows: &[Window],
+    samples: &mut Samples,
+    frame: usize,
+    machine_progress: bool,
+) -> Result<Pass, Error> {
+    let mut bar: Option<ProgressBar> = None;
+    let pass = session
+        .scan_pass_with(windows, PAIR_SCAN_TIMEOUT, samples, |progress| {
+            if machine_progress {
+                eprintln!(
+                    "NKSCAN_PROGRESS frame={frame} phase=superfine bytes={} total={}",
+                    progress.bytes, progress.total
+                );
+            }
+            if bar.is_none() && progress.total > 0 {
+                bar = Some(pass_bar(format!("superfine {frame}"), progress.total));
+            }
+            if let Some(bar) = &bar {
+                bar.report(progress);
+            }
+            if cancel::requested() {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        })
+        .await;
+    if let Some(bar) = bar {
+        crate::progress::done(bar);
+    }
+    pass
 }
 
 /// Move a discovered frame without changing its size.
@@ -894,5 +1007,22 @@ mod frame_offset_tests {
             vec![(3, rect(210)), (1, rect(10))]
         );
         assert!(select_supplied_frames(&available, &[4]).is_err());
+    }
+
+    #[test]
+    fn superfine_pair_changes_only_the_ccd_row_selection() {
+        let mut normal = Window::try_from(&[0_u8; nkscan::protocol::window::LENGTH][..]).unwrap();
+        normal.id = Channel::Red.id();
+        normal.origin = (518, 10_620);
+        normal.size = (8_964, 6_696);
+        normal.resolution = (4_000, 4_000);
+        normal.exposure = 454_711;
+        normal.color_interleaving = ColorInterleaving::MULTILINE_SIMULTANEOUS;
+
+        let paired = superfine_windows(std::slice::from_ref(&normal));
+        let mut expected = normal;
+        expected.color_interleaving = ColorInterleaving::LINE_WITHOUT_DISTANCE;
+
+        assert_eq!(paired, vec![expected]);
     }
 }
