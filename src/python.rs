@@ -115,6 +115,9 @@ impl From<Error> for PyErr {
                 err
             }
             Error::Cancelled => ScanCancelled::new_err("scan cancelled"),
+            Error::IncompleteScan { blocks } => {
+                ScannerError::new_err(Error::IncompleteScan { blocks }.to_string())
+            }
             Error::Device(fault) => ScannerError::new_err(fault.to_string()),
         }
     }

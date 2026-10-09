@@ -27,6 +27,9 @@ pub enum Error {
     #[error("scan cancelled")]
     Cancelled,
 
+    #[error("scan ended after {blocks} blocks before the requested frame was complete")]
+    IncompleteScan { blocks: usize },
+
     #[error("{0}")]
     Device(Box<Fault>),
 }

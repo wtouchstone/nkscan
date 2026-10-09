@@ -401,9 +401,9 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
                 bail!("the unit gave nothing for frame {}", n + 1);
             }
             if !pass.complete {
-                warn!(
-                    frame = n + 1,
-                    "The unit gave less than the pass promised, writing what arrived"
+                bail!(
+                    "the unit stopped before frame {} was complete; no image was written",
+                    n + 1
                 );
             }
             if let Some(removed) = scanned.cleaned {

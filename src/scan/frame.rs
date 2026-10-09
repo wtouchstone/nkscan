@@ -133,6 +133,14 @@ pub async fn scan_frame_with(
             Ok((pass, exposures, evidence, windows, focused, focus_position))
         })
         .await?;
+
+    // nkcolor publishes nothing from a pass that ended early: the unused part
+    // of the sample buffer is padding, not film
+    if !pass.complete {
+        return Err(Error::IncompleteScan {
+            blocks: pass.blocks,
+        });
+    }
     samples.to_full_scale(pass.layout.bits_per_sample);
 
     let cleaned = options
