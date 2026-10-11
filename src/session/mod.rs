@@ -135,7 +135,7 @@ impl Session {
             Err(Error::Device(fault))
                 if matches!(*fault, Fault::Rejected(Refusal::OutOfSequence, _)) =>
             {
-                debug!("a scan was still valid from the last process, stopping it");
+                info!("a scan was still valid from the last process, stopping it");
                 session.abort().await?;
                 session.test_unit_ready(READY_TIMEOUT).await?;
             }
@@ -155,6 +155,7 @@ impl Session {
             false => debug!("nothing is loaded, so the mechanism is left alone"),
         }
 
+        info!(reserved = session.reserved, "scanner session opened");
         Ok(session)
     }
 
@@ -281,7 +282,7 @@ impl Session {
             Err(Error::Device(fault))
                 if matches!(*fault, Fault::Rejected(Refusal::OutOfSequence, _)) =>
             {
-                debug!("a scan was still valid from earlier, stopping it");
+                info!("a scan was still valid from earlier, stopping it");
                 self.abort().await.map(drop)
             }
             Err(e) => Err(e),
@@ -400,7 +401,9 @@ impl Session {
         let transport = std::mem::replace(&mut self.transport, Box::new(transport::Closed));
         let closed = transport.close().await;
         released?;
-        Ok(closed?)
+        closed?;
+        info!("scanner session closed and released");
+        Ok(())
     }
 
     /// The number of `28h-00h` unit attentions this session received, one for each time a holder or strip went in or out
@@ -665,11 +668,13 @@ fn unsettled(change: Change, changes: usize) -> Error {
 impl Drop for Session {
     fn drop(&mut self) {
         if !self.reserved {
+            info!("scanner session closed");
             return;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Err(e) = block_on(self.run(&ReleaseUnit.cdb(), Data::None, PROBE_TIMEOUT)) {
-            warn!(%e, "could not release the scanner");
+        match block_on(self.run(&ReleaseUnit.cdb(), Data::None, PROBE_TIMEOUT)) {
+            Ok(_) => info!("scanner session closed and released"),
+            Err(e) => warn!(%e, "could not release the scanner"),
         }
         // Only SBP-2 has another initiator to lock out, and a browser has no SBP-2
         #[cfg(target_arch = "wasm32")]
