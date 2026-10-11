@@ -2,6 +2,7 @@ use clap::Parser;
 use cli::Cli;
 use nkscan::device;
 use std::io::{IsTerminal, stderr};
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod calibrate;
@@ -62,8 +63,35 @@ fn main() -> anyhow::Result<()> {
         .with_writer(progress::Writer)
         .init();
 
+    // One line at each end of the process, so a log shows which nkscan
+    // process held the scanner and whether it ended
+    let started = std::time::Instant::now();
+    info!(
+        pid = std::process::id(),
+        version = env!("CARGO_PKG_VERSION"),
+        args = ?std::env::args().skip(1).collect::<Vec<_>>(),
+        "nkscan started"
+    );
+    let outcome = run(cli.action);
+    match &outcome {
+        Ok(()) => info!(
+            pid = std::process::id(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "nkscan finished"
+        ),
+        Err(e) => warn!(
+            pid = std::process::id(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            error = %e,
+            "nkscan failed"
+        ),
+    }
+    outcome
+}
+
+fn run(action: cli::Action) -> anyhow::Result<()> {
     // Perform the requested CLI action
-    match cli.action {
+    match action {
         cli::Action::List => {
             let devs = pollster::block_on(device::list());
             println!("Attached scanners:");

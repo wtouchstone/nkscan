@@ -216,6 +216,11 @@ async fn probed() -> Vec<Probed> {
         found.push(usb_device(info).await);
     }
     found.extend(scsi_devices().await);
+    debug!(
+        count = found.len(),
+        devices = ?found.iter().map(|(d, _)| d.to_string()).collect::<Vec<_>>(),
+        "scanner list"
+    );
     found
 }
 
@@ -344,6 +349,7 @@ async fn scsi_devices() -> Vec<Probed> {
             }
         };
         let Some(identity) = probe(&mut transport).await else {
+            debug!(?path, "the path opened but did not identify as a scanner");
             continue;
         };
         found.push((

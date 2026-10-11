@@ -1,7 +1,15 @@
 //! SCSI transport on Windows, via the scanner class driver scsiscan.sys, which will be any scanner that talks via scsi
 
 use super::{BoxFuture, Completion, Data, Error, Status, Transport, sense_from_fixed};
-use std::{io, os::windows::ffi::OsStrExt, path::Path, ptr, thread::sleep, time::Duration};
+use std::{
+    io,
+    os::windows::ffi::OsStrExt,
+    path::{Path, PathBuf},
+    ptr,
+    sync::{Mutex, Once},
+    thread::{self, sleep},
+    time::{Duration, Instant},
+};
 use tracing::*;
 use windows_sys::Win32::{
     Foundation::{CloseHandle, ERROR_WORKING_SET_QUOTA, HANDLE, INVALID_HANDLE_VALUE},
@@ -35,6 +43,83 @@ const QUOTA_RETRIES: usize = 200;
 const QUOTA_RETRY_DELAY: Duration = Duration::from_millis(50);
 /// Nikon Scan sends READs of 804636 bytes through `SCSISCAN_CMD`
 const MAX_TRANSFER: usize = 1024 * 1024;
+/// A command that takes longer than this is logged when it completes
+const SLOW_COMMAND: Duration = Duration::from_secs(5);
+/// While a command is still waiting, the watchdog logs it at this interval.
+/// `SCSISCAN_CMD` has no timeout, so a command the scanner never answers
+/// waits for ever; this line is the only sign of it in the log
+const STUCK_REPORT: Duration = Duration::from_secs(30);
+
+/// Driver calls that have not returned yet: (id, path, opcode, start)
+static IN_FLIGHT: Mutex<Vec<(u64, PathBuf, u8, Instant)>> = Mutex::new(Vec::new());
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WATCHDOG: Once = Once::new();
+
+/// Start the thread that logs driver calls still waiting
+fn start_watchdog() {
+    WATCHDOG.call_once(|| {
+        let _ = thread::Builder::new()
+            .name("nkscan-scsiscan-watchdog".into())
+            .spawn(|| {
+                loop {
+                    sleep(STUCK_REPORT);
+                    let waiting = IN_FLIGHT.lock().map(|x| x.clone()).unwrap_or_default();
+                    for (_, path, opcode, start) in waiting {
+                        let waited = start.elapsed();
+                        if waited >= STUCK_REPORT {
+                            warn!(
+                                ?path,
+                                opcode = format!("0x{opcode:02x}"),
+                                waited_s = waited.as_secs(),
+                                "scanner command still waiting on the driver"
+                            );
+                        }
+                    }
+                }
+            });
+    });
+}
+
+/// One driver call, listed for the watchdog until it returns
+struct InFlight {
+    id: u64,
+    path: PathBuf,
+    opcode: u8,
+    start: Instant,
+}
+
+impl InFlight {
+    fn new(path: &Path, opcode: u8) -> Self {
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let start = Instant::now();
+        if let Ok(mut waiting) = IN_FLIGHT.lock() {
+            waiting.push((id, path.to_path_buf(), opcode, start));
+        }
+        Self {
+            id,
+            path: path.to_path_buf(),
+            opcode,
+            start,
+        }
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        if let Ok(mut waiting) = IN_FLIGHT.lock() {
+            waiting.retain(|(id, ..)| *id != self.id);
+        }
+        let elapsed = self.start.elapsed();
+        if elapsed >= SLOW_COMMAND {
+            info!(
+                path = ?self.path,
+                opcode = format!("0x{:02x}", self.opcode),
+                elapsed_ms = elapsed.as_millis() as u64,
+                "slow scanner command"
+            );
+        }
+    }
+}
 
 /// Microsoft's `SCSISCAN_CMD`, from `scsiscan.h`
 #[repr(C)]
@@ -55,6 +140,7 @@ struct ScsiScanCmd {
 /// A scanner reachable through `scsiscan.sys`
 pub struct ScsiScanDevice {
     handle: HANDLE,
+    path: PathBuf,
 }
 
 // The handle is owned by this struct and every use goes through `&mut self`
@@ -88,7 +174,11 @@ impl ScsiScanDevice {
             return Err(io::Error::last_os_error());
         }
         debug!(?path, "Opened scanner");
-        Ok(Self { handle })
+        start_watchdog();
+        Ok(Self {
+            handle,
+            path: path.to_path_buf(),
+        })
     }
 }
 
@@ -96,6 +186,7 @@ impl Drop for ScsiScanDevice {
     fn drop(&mut self) {
         // SAFETY: `handle` came from a successful `CreateFileW` and nothing else closes it
         let _ = unsafe { CloseHandle(self.handle) };
+        debug!(path = ?self.path, "Closed scanner");
     }
 }
 
@@ -142,6 +233,7 @@ impl ScsiScanDevice {
             sense_buffer: sb.as_mut_ptr(),
         };
 
+        let in_flight = InFlight::new(&self.path, padded[0]);
         let mut returned = 0u32;
         let mut attempt = 0;
         loop {
@@ -171,12 +263,20 @@ impl ScsiScanDevice {
             let e = io::Error::last_os_error();
             if e.raw_os_error() != Some(ERROR_WORKING_SET_QUOTA as i32) || attempt >= QUOTA_RETRIES
             {
+                warn!(
+                    path = ?self.path,
+                    opcode = format!("0x{:02x}", padded[0]),
+                    code = ?e.raw_os_error(),
+                    %e,
+                    "the scanner driver refused the command"
+                );
                 return Err(e.into());
             }
             attempt += 1;
             debug!(attempt, "Working set quota exceeded, retrying");
             sleep(QUOTA_RETRY_DELAY);
         }
+        drop(in_flight);
 
         trace!(
             srb_status = format!("0x{srb_status:02x}"),
@@ -190,6 +290,12 @@ impl ScsiScanDevice {
             SRB_STATUS_BUSY => Status::Busy,
             // A bus or driver level fault
             _ => {
+                warn!(
+                    path = ?self.path,
+                    opcode = format!("0x{:02x}", padded[0]),
+                    srb_status = format!("0x{srb_status:02x}"),
+                    "scanner bus fault"
+                );
                 return Err(io::Error::other(format!(
                     "SCSI bus fault: srb_status {srb_status:#04x}"
                 ))

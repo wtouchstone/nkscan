@@ -100,6 +100,13 @@ asked, as in Nikon Scan, and can take about two minutes on the LS-8000.
 record each frame's position, each scanner setting, the focus mode, and why a
 scanner failed to open.
 
+**Scanner lifecycle logs**
+Log lines record when each nkscan process starts and ends, and when a scanner
+session opens and closes. On Windows they also record each command the driver
+refuses, each slow command, and every 30 seconds a command is still waiting.
+The Windows driver has no timeout, so a scanner that stops answering otherwise
+leaves nothing in the log.
+
 **Python additions**
 `Capabilities.exposure_range` and `calibrate`, `Discovery.thumbnail_bounds` and
 `thumbnail_frames`, `ScanResult.meter_passes`, and `clean_rgb_ir`. Older
