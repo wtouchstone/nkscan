@@ -11,13 +11,17 @@ use crate::mono::{self, Luminance};
 use anyhow::{Context, Result, bail};
 use nkscan::{
     protocol::{
+        data::Setup,
         decode::{Samples, filled_columns},
-        window::Channel,
+        window::{Channel, Window},
     },
-    scan::pass::Pass,
+    scan::{
+        autoexpose::{Exposures, MeteringEvidence},
+        pass::Pass,
+    },
 };
 use std::{
-    fs::File,
+    fs::{self, File},
     io::BufWriter,
     path::{Path, PathBuf},
 };
@@ -140,6 +144,168 @@ pub fn write_frame(
     }
 
     Ok(written)
+}
+
+/// Write every image and exposure value retained from one frame's metering
+#[allow(clippy::too_many_arguments)]
+pub fn write_meter_evidence(
+    basename: &Path,
+    frame: usize,
+    evidence: &MeteringEvidence,
+    selected: &Exposures,
+    full_windows: &[Window],
+    setup_before: &[(Channel, Vec<u8>)],
+    setup_after: &[(Channel, Vec<u8>)],
+    nikon_negative: bool,
+) -> Result<Vec<PathBuf>> {
+    let meter_basename = PathBuf::from(format!("{}_{}_meter", basename.display(), frame));
+    let mut written = Vec::new();
+    let mut record = String::from("format=nkscan-meter-v2\n");
+    record.push_str(if nikon_negative {
+        "method=nikon-negative\n"
+    } else {
+        "method=generic\n"
+    });
+
+    if let Some(startup) = &evidence.startup_exposures {
+        record.push_str(&format!("startup={}\n", exposure_text(startup)));
+    }
+
+    for (index, meter) in evidence.passes.iter().enumerate() {
+        let number = index + 1;
+        written.extend(write_frame(
+            &meter_basename,
+            number,
+            &meter.samples,
+            &meter.pass,
+            None,
+            false,
+            true,
+        )?);
+        record.push_str(&format!(
+            "pass={number} dpi={} rows={} cols={} bits={} channels={:?} complete={} exposures={}\n",
+            meter.pass.layout.dpi,
+            meter.pass.rows,
+            meter.pass.cols,
+            meter.pass.layout.bits_per_sample,
+            meter.pass.layout.channels,
+            meter.pass.complete,
+            exposure_text(&meter.exposures),
+        ));
+        // The measured rectangle of this pass: first line, first pixel, last
+        // line, last pixel, in Nikon Scan's builder orientation
+        let [line0, pixel0, line1, pixel1] = meter.analyzer_rect;
+        record.push_str(&format!(
+            "analyzer_rect={number} {line0},{pixel0},{line1},{pixel1}\n"
+        ));
+        let path = PathBuf::from(format!(
+            "{}_{}_meter_pass{}_windows.bin",
+            basename.display(),
+            frame,
+            number
+        ));
+        write_windows(&path, &meter.windows)?;
+        written.push(path);
+    }
+    record.push_str(&format!("selected={}\n", exposure_text(selected)));
+
+    let windows_path = PathBuf::from(format!("{}_{}_scan_windows.bin", basename.display(), frame));
+    write_windows(&windows_path, full_windows)?;
+    written.push(windows_path);
+
+    write_setup_records(
+        basename,
+        frame,
+        "before",
+        setup_before,
+        &mut record,
+        &mut written,
+    )?;
+    write_setup_records(
+        basename,
+        frame,
+        "after",
+        setup_after,
+        &mut record,
+        &mut written,
+    )?;
+
+    let record_path = PathBuf::from(format!("{}_{}_meter.txt", basename.display(), frame));
+    fs::write(&record_path, record)
+        .with_context(|| format!("writing {}", record_path.display()))?;
+    written.push(record_path);
+    Ok(written)
+}
+
+fn write_windows(path: &Path, windows: &[Window]) -> Result<()> {
+    let mut bytes = Vec::with_capacity(12 + windows.len() * nkscan::protocol::window::LENGTH);
+    bytes.extend_from_slice(b"NWND");
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&(windows.len() as u32).to_le_bytes());
+    for window in windows {
+        bytes.extend_from_slice(&window.to_bytes());
+    }
+    fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))
+}
+
+fn write_setup_records(
+    basename: &Path,
+    frame: usize,
+    stage: &str,
+    records: &[(Channel, Vec<u8>)],
+    report: &mut String,
+    written: &mut Vec<PathBuf>,
+) -> Result<()> {
+    for (channel, bytes) in records {
+        let name = channel_name(*channel);
+        let path = PathBuf::from(format!(
+            "{}_{}_setup_{}_{}.bin",
+            basename.display(),
+            frame,
+            stage,
+            name
+        ));
+        fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))?;
+        written.push(path);
+
+        match Setup::from_bytes(bytes) {
+            Some(setup) => record_setup(report, stage, &name, &setup),
+            None => report.push_str(&format!(
+                "setup_{stage}_{name}=bytes:{} parse:error\n",
+                bytes.len()
+            )),
+        }
+    }
+    Ok(())
+}
+
+fn record_setup(report: &mut String, stage: &str, channel: &str, setup: &Setup) {
+    report.push_str(&format!(
+        "setup_{stage}_{channel}=format:{} base_level:{} base_exposure:{} base_white_balance:{} images:{}\n",
+        setup.format,
+        setup.base_level,
+        setup.base_exposure,
+        setup.base_white_balance,
+        setup.images.len(),
+    ));
+    for image in &setup.images {
+        report.push_str(&format!(
+            "setup_{stage}_{channel}_image={}:exposure:{}:white_balance:{}:min:{}:max:{}\n",
+            image.index, image.exposure, image.white_balance, image.min, image.max
+        ));
+    }
+}
+
+fn exposure_text(exposures: &Exposures) -> String {
+    exposures
+        .iter()
+        .map(|(channel, exposure)| format!("{}:{exposure}", channel_name(channel)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn channel_name(channel: Channel) -> String {
+    format!("{channel:?}").to_lowercase()
 }
 
 /// Where `channel` sits in the color buffer, which carries only the color
@@ -335,5 +501,79 @@ mod tests {
             .collect();
         assert_eq!(read, want);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// nkcolor: the meter record names the method, the start-up and chosen
+    /// exposures, each pass, and the rectangle each pass measured
+    #[test]
+    fn a_meter_record_keeps_each_pass_and_its_measured_rectangle() {
+        use nkscan::scan::autoexpose::{MeterPass, MeteringEvidence};
+        let (rows, cols) = (3usize, 4usize);
+        let layout = Layout::single_line(rows as u32, cols as u32, vec![1, 2, 3]);
+        let samples = Samples {
+            colors: vec![vec![1000u16; rows * cols]; 3],
+            ir: None,
+        };
+        let pass = Pass {
+            layout,
+            cooperation: Vec::new(),
+            complete: true,
+            blocks: cols,
+            rows,
+            cols,
+        };
+        let mut exposures = Exposures::default();
+        for (channel, value) in [
+            (Channel::Red, 10),
+            (Channel::Green, 20),
+            (Channel::Blue, 30),
+        ] {
+            exposures.set(channel, value);
+        }
+        let evidence = MeteringEvidence {
+            startup_exposures: Some(exposures.clone()),
+            passes: vec![MeterPass {
+                samples,
+                windows: Vec::new(),
+                pass,
+                exposures: exposures.clone(),
+                analyzer_rect: [1, 0, 2, 3],
+            }],
+        };
+
+        let dir = std::env::temp_dir().join(format!("nkscan-meter-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory to write into");
+        let written = write_meter_evidence(
+            &dir.join("scan"),
+            1,
+            &evidence,
+            &exposures,
+            &[],
+            &[],
+            &[],
+            true,
+        )
+        .expect("the evidence");
+        let record = written
+            .iter()
+            .find(|p| p.extension().is_some_and(|e| e == "txt"))
+            .expect("a meter record");
+        let text = std::fs::read_to_string(record).expect("the record");
+        std::fs::remove_dir_all(&dir).ok();
+
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "format=nkscan-meter-v2");
+        assert_eq!(lines[1], "method=nikon-negative");
+        assert_eq!(lines[2], "startup=red:10,green:20,blue:30");
+        assert!(lines[3].starts_with("pass=1 dpi="), "{text}");
+        assert!(
+            lines[3].ends_with("exposures=red:10,green:20,blue:30"),
+            "{text}"
+        );
+        assert_eq!(lines[4], "analyzer_rect=1 1,0,2,3");
+        assert!(
+            lines.contains(&"selected=red:10,green:20,blue:30"),
+            "{text}"
+        );
     }
 }

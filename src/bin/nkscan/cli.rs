@@ -101,6 +101,14 @@ pub struct Scan {
     #[arg(long)]
     pub lock_ae: bool,
 
+    /// Keep each meter image and a text record of all exposure values
+    #[arg(long)]
+    pub meter: bool,
+
+    /// Use Nikon Scan's matching color-negative meter sequence
+    #[arg(long, requires = "meter")]
+    pub nikon_meter: bool,
+
     /// Resolution. Defaults to scanner maximum.
     #[arg(long)]
     pub dpi: Option<u16>,

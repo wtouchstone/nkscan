@@ -251,7 +251,7 @@ impl Metering {
 
     /// The measured crop in prescan pixels (LS5000.md3 Mac `1009e250`, LS4000.md3 `10034f6a`,
     /// LS9000.md3 `1003a780`)
-    fn crop(&self, caps: &Capabilities, window: &Window, image: &Image) -> Crop {
+    pub(crate) fn crop(&self, caps: &Capabilities, window: &Window, image: &Image) -> Crop {
         let ls40 = caps.address.x_axis.optical_dpi != 4000;
         let n = u32::from(prescan_divisor(caps));
         let device: Option<[u32; 4]> = match adapter_crop(caps, self.film) {
