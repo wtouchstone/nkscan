@@ -26,6 +26,7 @@ use crate::{
         meter::Metering,
         pass::{Pass, Progress},
         profile::{self, Film},
+        thumbnail,
         window::{MAX_SAMPLES, Recipe},
     },
     session::{Session as RustSession, block_on},
@@ -312,6 +313,10 @@ pub struct PyCapabilities {
     x_dpi_range: (u16, u16),
     y_dpi_range: (u16, u16),
     optical_dpi: u16,
+    /// Full scanner-address width across the sensor bar
+    x_boundary: u32,
+    /// Full scanner-address length along the film transport
+    y_boundary: u32,
 
     // What follows is for a caller deciding which controls to offer. Every
     // field is read off the unit's own pages, so a control gated on one is
@@ -322,6 +327,8 @@ pub struct PyCapabilities {
     thumbnail_dpi: (u16, u16),
     /// Focus positions the unit accepts
     focus_range: (u16, u16),
+    /// nkcolor: exposure values the unit accepts, in the scanner's native units
+    exposure_range: (u32, u32),
     /// Most readings of one line a pass may ask for. 1 where the unit reads a
     /// line one time, so a multi-sample control can be hidden
     max_samples: u8,
@@ -454,6 +461,8 @@ impl From<&RustCapabilities> for PyCapabilities {
                 caps.address.y_axis.dpi_range.last,
             ),
             optical_dpi: caps.address.x_axis.optical_dpi,
+            x_boundary: caps.address.x_axis.boundary,
+            y_boundary: caps.address.y_axis.boundary,
 
             max_frames: caps.address.max_frames,
             thumbnail_dpi: (
@@ -463,6 +472,10 @@ impl From<&RustCapabilities> for PyCapabilities {
             focus_range: (
                 caps.address.focus_range.start,
                 caps.address.focus_range.last,
+            ),
+            exposure_range: (
+                caps.set_window.exposure.start,
+                caps.set_window.exposure.last,
             ),
             // 2-10 byte 43: a unit that does not offer the mode reads a line
             // once, and refuses a window that asks for more
@@ -595,6 +608,17 @@ fn meter_pass_to_python(
     )
 }
 
+/// nkcolor: the index of the thumbnail column whose feed address is nearest `address`
+fn nearest_column(columns: &[u32], address: u32) -> usize {
+    let after = columns.partition_point(|&c| c < address);
+    match (after.checked_sub(1), columns.get(after)) {
+        (Some(before), Some(&next)) if address - columns[before] <= next - address => before,
+        (_, Some(_)) => after,
+        (Some(before), None) => before,
+        (None, None) => 0,
+    }
+}
+
 fn channel_name(id: u8) -> String {
     format!("{:?}", Channel::from(id)).to_lowercase()
 }
@@ -663,6 +687,12 @@ pub struct PyDiscovery {
     /// The film base density off the thumbnail, for `scan_frame`. `None` without a
     /// thumbnail, and on the LS-8000 and LS-9000, where `scan_frame` uses the default
     base_density: Option<(f64, f64, f64)>,
+    /// nkcolor: the scanner-address rectangle covered by `thumbnail`
+    thumbnail_bounds: Option<(u32, u32, u32, u32)>,
+    /// nkcolor: each frame's first and last thumbnail column and its feed
+    /// extent, where the unit positions the film by its perforation table.
+    /// Read off `column_addresses`
+    thumbnail_frames: Option<Vec<(usize, usize, u32)>>,
 }
 
 // ----- a session -----
@@ -791,6 +821,8 @@ impl PySession {
             contrast,
             arrived,
             base_density,
+            thumbnail_bounds,
+            thumbnail_frames,
         ) = py.detach(move || {
             self.with(|session| {
                 let mut samples = Samples::default();
@@ -811,8 +843,32 @@ impl PySession {
                 let row_addresses = discovery.row_addresses;
                 let contrast = discovery.contrast;
                 let base_density = discovery.base_density.map(|[r, g, b]| (r, g, b));
+                // nkcolor: the thumbnail columns each frame spans
+                let thumbnail_frames = match (&columns, Framing::choose(session.capabilities())) {
+                    (Some(columns), Framing::Perforation) => Some(
+                        frames
+                            .iter()
+                            .map(|&(top, _left, bottom, _right)| {
+                                (
+                                    nearest_column(columns, top),
+                                    nearest_column(columns, bottom),
+                                    bottom.saturating_sub(top),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                    _ => None,
+                };
                 match discovery.thumbnail {
                     Some(pass) => {
+                        // nkcolor: the scanner-address rectangle the thumbnail covers
+                        let thumbnail_bounds = thumbnail::windows(session.capabilities())?
+                            .first()
+                            .map(|window| {
+                                let (left, top) = window.origin;
+                                let (width, height) = window.size;
+                                (top, left, top + height, left + width)
+                            });
                         let ids: Vec<u8> = pass.layout.colors().collect();
                         let shape = (pass.rows, pass.cols);
                         let arrived = Some((pass.complete, pass.blocks));
@@ -828,6 +884,8 @@ impl PySession {
                             contrast,
                             arrived,
                             base_density,
+                            thumbnail_bounds,
+                            thumbnail_frames,
                         ))
                     }
                     None => Ok((
@@ -842,6 +900,8 @@ impl PySession {
                         contrast,
                         None,
                         base_density,
+                        None,
+                        None,
                     )),
                 }
             })
@@ -861,6 +921,8 @@ impl PySession {
             thumbnail_complete: arrived.map(|(complete, _)| complete),
             thumbnail_blocks: arrived.map(|(_, blocks)| blocks),
             base_density,
+            thumbnail_bounds,
+            thumbnail_frames,
         })
     }
 

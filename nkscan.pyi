@@ -48,6 +48,16 @@ class Capabilities:
     @property
     def optical_dpi(self) -> builtins.int: ...
     @property
+    def x_boundary(self) -> builtins.int:
+        r"""
+        Full scanner-address width across the sensor bar
+        """
+    @property
+    def y_boundary(self) -> builtins.int:
+        r"""
+        Full scanner-address length along the film transport
+        """
+    @property
     def max_frames(self) -> builtins.int:
         r"""
         Frames the loaded holder can hold, 0 where the unit publishes no table
@@ -61,6 +71,11 @@ class Capabilities:
     def focus_range(self) -> tuple[builtins.int, builtins.int]:
         r"""
         Focus positions the unit accepts
+        """
+    @property
+    def exposure_range(self) -> tuple[builtins.int, builtins.int]:
+        r"""
+        nkcolor: exposure values the unit accepts, in the scanner's native units
         """
     @property
     def max_samples(self) -> builtins.int:
@@ -228,6 +243,18 @@ class Discovery:
         r"""
         The film base density off the thumbnail, for `scan_frame`. `None` without a
         thumbnail, and on the LS-8000 and LS-9000, where `scan_frame` uses the default
+        """
+    @property
+    def thumbnail_bounds(self) -> typing.Optional[tuple[builtins.int, builtins.int, builtins.int, builtins.int]]:
+        r"""
+        nkcolor: the scanner-address rectangle covered by `thumbnail`
+        """
+    @property
+    def thumbnail_frames(self) -> typing.Optional[builtins.list[tuple[builtins.int, builtins.int, builtins.int]]]:
+        r"""
+        nkcolor: each frame's first and last thumbnail column and its feed
+        extent, where the unit positions the film by its perforation table.
+        Read off `column_addresses`
         """
 
 class MediaError(ScannerError):
