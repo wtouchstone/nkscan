@@ -7,8 +7,8 @@ use crate::protocol::decode::Image;
 
 /// A film's characteristic curve: 32 log exposures and the density of each channel at them
 pub(crate) struct Curve {
-    log_exposure: [f64; 32],
-    density: [[f64; 32]; 3],
+    pub(crate) log_exposure: [f64; 32],
+    pub(crate) density: [[f64; 32]; 3],
 }
 
 /// Color negative (LS5000.md3 `0x100ce578`, LS9000.md3 `0x100dc670`)

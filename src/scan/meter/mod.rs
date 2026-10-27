@@ -3,6 +3,7 @@
 //! LS5000.md3 Mac `1009eb50`, LS9000.md3 `10044d90`. Each number is Nikon's,
 //! from the decompiled function that the item names.
 
+pub(crate) mod ls8000;
 pub(crate) mod negative;
 
 use crate::{
@@ -10,6 +11,7 @@ use crate::{
     protocol::{
         caps::{Capabilities, film::FilmFormat},
         decode::Image,
+        model::Model,
         window::{Channel, Window},
     },
     scan::profile::Film,
@@ -171,17 +173,27 @@ impl Metering {
                 colors: vec![image.colors[r], image.colors[g], image.colors[b]],
                 ..*image
             };
+            // nkcolor: the LS-8000 has its own curve and its own form of the analyzer
+            let ls8000 =
+                self.film == Film::Negative && caps.identity.model() == Some(Model::Ls8000);
+            let ls8000_curve = ls8000.then(ls8000::curve);
             let inputs = Inputs {
                 base: pick(base),
                 prescan: pick(&current),
                 base_density: self.base_density.unwrap_or(DEFAULT_BASE_DENSITY),
-                curve: match self.film {
-                    Film::MonochromeNegative => &MONOCHROME_NEGATIVE,
+                curve: match (self.film, &ls8000_curve) {
+                    (Film::MonochromeNegative, _) => &MONOCHROME_NEGATIVE,
+                    (_, Some(curve)) => curve,
                     _ => &COLOR_NEGATIVE,
                 },
                 percentile: self.percentile,
             };
-            let Some(mut metered) = negative::exposures(&planes, crop, &inputs) else {
+            let metered = if ls8000 {
+                ls8000::exposures(&planes, crop, &inputs)
+            } else {
+                negative::exposures(&planes, crop, &inputs)
+            };
+            let Some(mut metered) = metered else {
                 warn!("the prescan gave the film curve nothing to place; scanning as prescanned");
                 return Ok(Step::Done(self.limit(caps, next)));
             };
@@ -279,6 +291,16 @@ impl Metering {
             .map(|e| e.clamp(limit.start, limit.last.min(MAX_EXPOSURE)))
             .collect()
     }
+}
+
+/// nkcolor: whether a captured Nikon Scan session verifies the color negative meter on `model`
+///
+/// The LS-50 and LS-5000 share LS5000.md3's rule, which [`negative`] ports. The
+/// LS-8000 uses [`ls8000`]. Each was checked against a Nikon builder record:
+/// the three final exposures match to the count. `scan --nikon-meter` and
+/// `scan_frame(nikon_negative_meter=True)` refuse every other unit.
+pub fn nikon_negative_supported(model: Option<Model>) -> bool {
+    matches!(model, Some(Model::Ls50 | Model::Ls5000 | Model::Ls8000))
 }
 
 /// The 35mm crop of Nikon Scan in prescan pixels, from the adapter, the holder and the film.
@@ -667,5 +689,194 @@ mod tests {
             .map(|c| f64::from(got[c]) / f64::from(base[c]))
             .collect();
         assert!(k.windows(2).all(|p| (p[0] - p[1]).abs() < 1e-4), "{k:?}");
+    }
+
+    /// nkcolor: a Nikon builder record (`NBLD`): the meter image as planes, its width and height
+    fn builder_record(record: &[u8], bytes_per_pixel: usize) -> (Vec<Vec<u16>>, usize, usize) {
+        let read = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        assert_eq!(&record[..4], b"NBLD");
+        let descriptor_length = read(record, 12) as usize;
+        let descriptor = &record[16..16 + descriptor_length];
+        let at = 16 + descriptor_length;
+        let pixels = &record[at + 4..at + 4 + read(record, at) as usize];
+        let (width, height) = (read(descriptor, 0) as usize, read(descriptor, 4) as usize);
+        let mut planes = vec![vec![0u16; width * height]; 3];
+        for line in 0..height {
+            for x in 0..width {
+                let source = (line * width + x) * bytes_per_pixel;
+                for (c, plane) in planes.iter_mut().enumerate() {
+                    let o = source + c * 2;
+                    plane[(width - 1 - x) * height + line] =
+                        u16::from_le_bytes([pixels[o], pixels[o + 1]]);
+                }
+            }
+        }
+        (planes, width, height)
+    }
+
+    fn record_image(planes: &[Vec<u16>], width: usize, height: usize) -> Image<'_> {
+        Image {
+            colors: planes.iter().map(Vec::as_slice).collect(),
+            ir: &[],
+            rows: width,
+            cols: height,
+            stride: height,
+            bits: 16,
+        }
+    }
+
+    fn ls8000() -> Capabilities {
+        let mut caps = unit();
+        caps.identity.product = "LS-8000 ED".into();
+        caps
+    }
+
+    /// nkcolor: only the units a Nikon builder record verifies take `--nikon-meter`
+    #[test]
+    fn the_nikon_negative_meter_is_verified_per_unit() {
+        assert!(nikon_negative_supported(Some(Model::Ls50)));
+        assert!(nikon_negative_supported(Some(Model::Ls5000)));
+        assert!(nikon_negative_supported(Some(Model::Ls8000)));
+        assert!(!nikon_negative_supported(Some(Model::Ls9000)));
+        assert!(!nikon_negative_supported(None));
+    }
+
+    /// nkcolor: the LS-5000 builder record of 2026-09-02 gets Nikon Scan's three exposures
+    #[test]
+    fn an_ls5000_builder_record_is_exposed_as_nikon_exposes_it() {
+        let (planes, width, height) = builder_record(
+            include_bytes!("../../../tests/data/nikon-builder-20260902.bin"),
+            8,
+        );
+        assert_eq!((width, height), (281, 413));
+        let base = [59536, 43137, 31992];
+        let metering = Metering {
+            format: Some(FilmFormat::F135),
+            ..Metering::new(Film::Negative)
+        };
+        // Nikon Scan's first meter exposures, off the start-up values
+        let seeded = metering.seed(&windows(&base), &base);
+        assert_eq!(seeded, [98805, 171731, 171807]);
+        let mut caps = unit();
+        caps.identity.product = "LS-5000 ED".into();
+        let step = metering
+            .step(
+                &caps,
+                &record_image(&planes, width, height),
+                &windows(&seeded),
+                &base,
+                1,
+            )
+            .unwrap();
+        assert_eq!(step, Step::Done(vec![100454, 197670, 244673]));
+    }
+
+    /// The LS-8000 meter windows of the builder record: 666 by 333 dpi
+    fn ls8000_windows(exposures: &[u32]) -> Vec<Window> {
+        let mut w = windows(exposures);
+        for w in &mut w {
+            w.resolution = (666, 333);
+        }
+        w
+    }
+
+    /// nkcolor: the LS-8000 builder record of 2026-09-10 gets Nikon Scan's 12 limits
+    #[test]
+    fn the_ls8000_analyzer_matches_the_builder_record() {
+        let (planes, width, height) = builder_record(
+            include_bytes!("../../../tests/data/nikon-builder-ls8000-20260910.bin"),
+            6,
+        );
+        assert_eq!((width, height), (1494, 558));
+        let image = record_image(&planes, width, height);
+        let curve = ls8000::curve();
+        let inputs = negative::Inputs {
+            base: [275778, 339801, 282416],
+            prescan: [457678, 3298679, 9845379],
+            base_density: DEFAULT_BASE_DENSITY,
+            curve: &curve,
+            percentile: 1.0,
+        };
+        // The 645 crop at 666 by 333 dpi is the analysis rectangle Nikon Scan used
+        let metering = Metering {
+            format: Some(FilmFormat::F645),
+            ..Metering::new(Film::Negative)
+        };
+        let crop = metering.crop(&ls8000(), &ls8000_windows(&[1])[0], &image);
+        assert_eq!((crop.x, crop.y), ((91, 1402), (56, 501)));
+        let ranges = ls8000::ranges(&image, crop, &inputs).unwrap();
+        assert_eq!(ranges.low, [2282, 4294, 6966]);
+        assert_eq!(ranges.high, [34122, 57586, 56450]);
+        assert_eq!(ranges.balanced_low, [2282, 4294, 6966]);
+        assert_eq!(ranges.balanced_high, [34122, 57586, 56450]);
+    }
+
+    /// nkcolor: the LS-8000 builder record gets Nikon Scan's three exposures, and the LS-9000
+    /// curve does not give them
+    #[test]
+    fn an_ls8000_builder_record_is_exposed_as_nikon_exposes_it() {
+        let (planes, width, height) = builder_record(
+            include_bytes!("../../../tests/data/nikon-builder-ls8000-20260910.bin"),
+            6,
+        );
+        let image = record_image(&planes, width, height);
+        let base = [275778, 339801, 282416];
+        let metered = [457678, 3298679, 9845379];
+        let metering = Metering {
+            format: Some(FilmFormat::F645),
+            ..Metering::new(Film::Negative)
+        };
+        let step = metering
+            .step(&ls8000(), &image, &ls8000_windows(&metered), &base, 3)
+            .unwrap();
+        assert_eq!(step, Step::Done(vec![879020, 3701152, 4671874]));
+
+        let mut ls9000 = unit();
+        ls9000.identity.product = "LS-9000 ED".into();
+        let step = metering
+            .step(&ls9000, &image, &ls8000_windows(&metered), &base, 3)
+            .unwrap();
+        assert_ne!(step, Step::Done(vec![879020, 3701152, 4671874]));
+    }
+
+    /// nkcolor: an underexposed first LS-8000 meter image is metered again before the analyzer
+    #[test]
+    fn a_low_first_ls8000_pass_is_metered_again() {
+        let (mut planes, width, height) = builder_record(
+            include_bytes!("../../../tests/data/nikon-builder-ls8000-20260910.bin"),
+            6,
+        );
+        let base = [275778u32, 339801, 282416];
+        let metering = Metering {
+            format: Some(FilmFormat::F645),
+            ..Metering::new(Film::Negative)
+        };
+        let first = metering.seed(&windows(&base), &base);
+        // The same film at the first exposures instead of the settled ones
+        let settled = [457678.0, 3298679.0, 9845379.0];
+        for (c, plane) in planes.iter_mut().enumerate() {
+            for v in plane.iter_mut() {
+                *v = (f64::from(*v) * f64::from(first[c]) / settled[c])
+                    .round()
+                    .clamp(0.0, 65535.0) as u16;
+            }
+        }
+        let step = metering
+            .step(
+                &ls8000(),
+                &record_image(&planes, width, height),
+                &ls8000_windows(&first),
+                &base,
+                1,
+            )
+            .unwrap();
+        let Step::Again(next) = step else {
+            panic!("a dark first pass is metered again, this said {step:?}");
+        };
+        assert_eq!(next[0], first[0]);
+        assert!(
+            next[1] > first[1] && next[2] > first[2],
+            "{next:?} {first:?}"
+        );
     }
 }
