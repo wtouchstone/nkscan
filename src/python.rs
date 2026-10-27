@@ -518,6 +518,10 @@ pub struct PyScanResult {
     cols: usize,
     /// What the frame was exposed at, keyed the same way as `colors`
     exposures: HashMap<String, u32>,
+    /// The scanner's start-up exposure values used to seed host metering
+    meter_startup_exposures: Option<HashMap<String, u32>>,
+    /// Every decoded meter pass and the exposure that produced it
+    meter_passes: Vec<Py<PyMeterPass>>,
     /// Pixels dust removal rebuilt, where asked for
     cleaned: Option<usize>,
     /// True if all blocks of the pass arrived. If this is false, the planes
@@ -534,6 +538,55 @@ pub struct PyScanResult {
     focused: String,
     /// The lens position during the pass. `None` if the unit does not report it
     focus_position: Option<u16>,
+}
+
+/// One decoded image used to decide a frame's exposure
+#[gen_stub_pyclass]
+#[pyclass(name = "MeterPass", frozen, get_all, module = "nkscan")]
+pub struct PyMeterPass {
+    colors: HashMap<String, Py<PyArray2<u16>>>,
+    ir: Option<Py<PyArray2<u16>>>,
+    dpi: u32,
+    rows: usize,
+    cols: usize,
+    /// The exposure values that produced these pixels
+    exposures: HashMap<String, u32>,
+    /// The rectangle metering measured, inclusive: first line, first pixel,
+    /// last line, last pixel, in Nikon Scan's builder orientation (lines along
+    /// the feed, pixels along the sensor from the far end)
+    analyzer_rect: (usize, usize, usize, usize),
+}
+
+/// nkcolor: one meter pass as a `MeterPass`
+fn meter_pass_to_python(
+    py: Python<'_>,
+    meter: crate::scan::autoexpose::MeterPass,
+) -> PyResult<Py<PyMeterPass>> {
+    let ids: Vec<u8> = meter.pass.layout.colors().collect();
+    let (rows, cols) = (meter.pass.rows, meter.pass.cols);
+    let colors = colors_to_numpy(py, &ids, meter.samples.colors, rows, cols);
+    let ir = meter
+        .samples
+        .ir
+        .map(|plane| plane_to_numpy(py, plane, rows, cols));
+    let exposures = meter
+        .exposures
+        .iter()
+        .map(|(c, e)| (channel_name(c.id()), e))
+        .collect();
+    let [line0, pixel0, line1, pixel1] = meter.analyzer_rect;
+    Py::new(
+        py,
+        PyMeterPass {
+            colors,
+            ir,
+            dpi: meter.pass.layout.dpi,
+            rows,
+            cols,
+            exposures,
+            analyzer_rect: (line0, pixel0, line1, pixel1),
+        },
+    )
 }
 
 fn channel_name(id: u8) -> String {
@@ -801,7 +854,10 @@ impl PySession {
     /// `film` and `format` are as for `discover_frames`, and `base_density` is
     /// `Discovery.base_density`. `lock_white_balance` defaults to
     /// `Capabilities.locks_white_balance(film)`. `clean` uses infrared
-    /// internally and cannot be combined with retained `infrared` output
+    /// internally and cannot be combined with retained `infrared` output.
+    /// nkcolor: `nikon_negative_meter` meters as a color negative with the rule
+    /// a Nikon Scan capture verifies on this unit, and refuses other units.
+    /// Every host meter image comes back in `meter_passes`
     #[pyo3(signature = (
         frame,
         dpi=None,
@@ -814,6 +870,7 @@ impl PySession {
         format=None,
         base_density=None,
         lock_white_balance=None,
+        nikon_negative_meter=false,
         exposures=None,
         focus=None,
         progress=None,
@@ -833,6 +890,7 @@ impl PySession {
         format: Option<&str>,
         base_density: Option<(f64, f64, f64)>,
         lock_white_balance: Option<bool>,
+        nikon_negative_meter: bool,
         exposures: Option<HashMap<String, u32>>,
         #[gen_stub(override_type(type_repr = "typing.Optional[typing.Union[builtins.int, tuple[builtins.float, builtins.float], typing.Literal['auto', 'hold']]]", imports = ("builtins", "typing")))]
         focus: Option<Bound<'_, PyAny>>,
@@ -863,7 +921,7 @@ impl PySession {
             e
         });
 
-        py.detach(move || {
+        let (scanned, buf) = py.detach(move || {
             self.with(|session| {
                 let recipe = Recipe::new(
                     session.capabilities(),
@@ -878,6 +936,7 @@ impl PySession {
                 let options = frame::Options {
                     exposures: locked.as_ref(),
                     metering,
+                    nikon_negative_meter,
                     clean,
                     focus,
                     clean_quality,
@@ -893,34 +952,52 @@ impl PySession {
                         Phase::Scan => report(&progress, "scan", 0, p),
                     },
                 ))?;
+                Ok((scanned, buf))
+            })
+        })?;
 
-                let ids: Vec<u8> = scanned.pass.layout.colors().collect();
-                let (rows, cols) = (scanned.pass.rows, scanned.pass.cols);
-
-                Python::attach(|py| {
-                    let colors = colors_to_numpy(py, &ids, buf.colors, rows, cols);
-                    let ir = buf.ir.map(|plane| plane_to_numpy(py, plane, rows, cols));
-                    let exposures = scanned
-                        .exposures
+        let ids: Vec<u8> = scanned.pass.layout.colors().collect();
+        let (rows, cols) = (scanned.pass.rows, scanned.pass.cols);
+        let colors = colors_to_numpy(py, &ids, buf.colors, rows, cols);
+        let ir = buf.ir.map(|plane| plane_to_numpy(py, plane, rows, cols));
+        let exposures = scanned
+            .exposures
+            .iter()
+            .map(|(c, e)| (channel_name(c.id()), e))
+            .collect();
+        // nkcolor: the meter evidence
+        let (meter_startup_exposures, meter_passes) = match scanned.metering {
+            Some(metering) => {
+                let startup = metering.startup_exposures.map(|values| {
+                    values
                         .iter()
                         .map(|(c, e)| (channel_name(c.id()), e))
-                        .collect();
+                        .collect()
+                });
+                let passes = metering
+                    .passes
+                    .into_iter()
+                    .map(|meter| meter_pass_to_python(py, meter))
+                    .collect::<PyResult<Vec<_>>>()?;
+                (startup, passes)
+            }
+            None => (None, Vec::new()),
+        };
 
-                    Ok(PyScanResult {
-                        colors,
-                        ir,
-                        dpi: scanned.pass.layout.dpi,
-                        rows,
-                        cols,
-                        exposures,
-                        cleaned: scanned.cleaned,
-                        complete: scanned.pass.complete,
-                        blocks: scanned.pass.blocks,
-                        focused: focused_name(scanned.focused),
-                        focus_position: scanned.focus_position,
-                    })
-                })
-            })
+        Ok(PyScanResult {
+            colors,
+            ir,
+            dpi: scanned.pass.layout.dpi,
+            rows,
+            cols,
+            exposures,
+            meter_startup_exposures,
+            meter_passes,
+            cleaned: scanned.cleaned,
+            complete: scanned.pass.complete,
+            blocks: scanned.pass.blocks,
+            focused: focused_name(scanned.focused),
+            focus_position: scanned.focus_position,
         })
     }
 
@@ -1102,6 +1179,7 @@ fn nkscan_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCapabilities>()?;
     m.add_class::<PySession>()?;
     m.add_class::<PyScanResult>()?;
+    m.add_class::<PyMeterPass>()?;
     m.add_class::<PyDiscovery>()?;
     m.add_function(wrap_pyfunction!(list_devices, m)?)?;
     m.add_function(wrap_pyfunction!(init_logging, m)?)?;

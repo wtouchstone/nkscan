@@ -3,13 +3,13 @@
 use crate::{
     dust,
     error::Error,
-    protocol::{data::Rect, decode::Samples},
+    protocol::{data::Rect, decode::Samples, window::Window},
     scan::{
-        autoexpose::Exposures,
+        autoexpose::{Exposures, MeteringEvidence},
         clean::clean_frame,
         focus::{Focus, Focused},
         framing,
-        meter::Metering,
+        meter::{self, Metering},
         pass::{Pass, Progress},
         window::Recipe,
     },
@@ -41,6 +41,10 @@ pub struct Options<'a> {
     pub clean: bool,
     /// How to focus before the pass
     pub focus: Focus,
+    /// nkcolor: meter as a color negative with the rule a Nikon Scan capture
+    /// verifies on this unit, whatever `metering.film` says. Refused on a unit
+    /// [`meter::nikon_negative_supported`] does not name
+    pub nikon_negative_meter: bool,
     /// nkcolor: normal or fine dust reconstruction
     pub clean_quality: dust::Quality,
 }
@@ -58,6 +62,11 @@ pub struct Scanned {
     pub focused: Focused,
     /// The lens position during the pass. `None` if the unit does not report it
     pub focus_position: Option<u16>,
+    /// nkcolor: the SET WINDOW descriptors of the full pass
+    pub windows: Vec<Window>,
+    /// nkcolor: every meter image and its exposure. `None` when the caller
+    /// supplied the exposures
+    pub metering: Option<MeteringEvidence>,
 }
 
 /// Focus, meter, and take the pass over `frame`
@@ -83,29 +92,47 @@ pub async fn scan_frame_with(
     samples: &mut Samples,
     mut on: impl FnMut(Phase, Progress) -> ControlFlow<()>,
 ) -> Result<Scanned, Error> {
-    let (pass, exposures, focused, focus_position) = at_frame(session, frame, async |session| {
-        let (focused, focus_position) = focus_on(session, frame, options.focus).await?;
+    let mut metering = options.metering;
+    if options.nikon_negative_meter {
+        let caps = session.capabilities();
+        if !meter::nikon_negative_supported(caps.identity.model()) {
+            return Err(Error::Unsupported {
+                op: "Nikon negative metering",
+                reason: format!(
+                    "no Nikon Scan capture verifies the negative meter on {}",
+                    caps.identity.product
+                ),
+            });
+        }
+        metering.film = crate::scan::profile::Film::Negative;
+        metering.lock_white_balance = false;
+    }
 
-        let exposures = match options.exposures {
-            Some(locked) => locked.clone(),
-            None => {
-                session
-                    .autoexpose_frame_with(frame, recipe, &options.metering, |pass, p| {
-                        on(Phase::Meter(pass), p)
-                    })
-                    .await?
-            }
-        };
+    let (pass, exposures, metering, windows, focused, focus_position) =
+        at_frame(session, frame, async |session| {
+            let (focused, focus_position) = focus_on(session, frame, options.focus).await?;
 
-        let mut windows = recipe.windows(session.capabilities(), frame)?;
-        exposures.apply(&mut windows);
+            let (exposures, evidence) = match options.exposures {
+                Some(locked) => (locked.clone(), None),
+                None => {
+                    let metered = session
+                        .autoexpose_frame_evidence_with(frame, recipe, &metering, |pass, p| {
+                            on(Phase::Meter(pass), p)
+                        })
+                        .await?;
+                    (metered.exposures, Some(metered.evidence))
+                }
+            };
 
-        let pass = session
-            .scan_pass_with(&windows, SCAN_TIMEOUT, samples, |p| on(Phase::Scan, p))
-            .await?;
-        Ok((pass, exposures, focused, focus_position))
-    })
-    .await?;
+            let mut windows = recipe.windows(session.capabilities(), frame)?;
+            exposures.apply(&mut windows);
+
+            let pass = session
+                .scan_pass_with(&windows, SCAN_TIMEOUT, samples, |p| on(Phase::Scan, p))
+                .await?;
+            Ok((pass, exposures, evidence, windows, focused, focus_position))
+        })
+        .await?;
     samples.to_full_scale(pass.layout.bits_per_sample);
 
     let cleaned = options
@@ -126,6 +153,8 @@ pub async fn scan_frame_with(
         cleaned,
         focused,
         focus_position,
+        windows,
+        metering,
     })
 }
 

@@ -14,6 +14,7 @@ __all__ = [
     "DeviceNotFound",
     "Discovery",
     "MediaError",
+    "MeterPass",
     "ScanCancelled",
     "ScanResult",
     "ScannerError",
@@ -230,6 +231,34 @@ class MediaError(ScannerError):
     """
     ...
 
+@typing.final
+class MeterPass:
+    r"""
+    One decoded image used to decide a frame's exposure
+    """
+    @property
+    def colors(self) -> builtins.dict[builtins.str, numpy.typing.NDArray[numpy.uint16]]: ...
+    @property
+    def ir(self) -> typing.Optional[numpy.typing.NDArray[numpy.uint16]]: ...
+    @property
+    def dpi(self) -> builtins.int: ...
+    @property
+    def rows(self) -> builtins.int: ...
+    @property
+    def cols(self) -> builtins.int: ...
+    @property
+    def exposures(self) -> builtins.dict[builtins.str, builtins.int]:
+        r"""
+        The exposure values that produced these pixels
+        """
+    @property
+    def analyzer_rect(self) -> tuple[builtins.int, builtins.int, builtins.int, builtins.int]:
+        r"""
+        The rectangle metering measured, inclusive: first line, first pixel,
+        last line, last pixel, in Nikon Scan's builder orientation (lines along
+        the feed, pixels along the sensor from the far end)
+        """
+
 class ScanCancelled(ScannerError):
     r"""
     A progress callback returned False
@@ -261,6 +290,16 @@ class ScanResult:
     def exposures(self) -> builtins.dict[builtins.str, builtins.int]:
         r"""
         What the frame was exposed at, keyed the same way as `colors`
+        """
+    @property
+    def meter_startup_exposures(self) -> typing.Optional[builtins.dict[builtins.str, builtins.int]]:
+        r"""
+        The scanner's start-up exposure values used to seed host metering
+        """
+    @property
+    def meter_passes(self) -> builtins.list[MeterPass]:
+        r"""
+        Every decoded meter pass and the exposure that produced it
         """
     @property
     def cleaned(self) -> typing.Optional[builtins.int]:
@@ -352,7 +391,7 @@ class Session:
         works the same as a detected one, just slower if the stage has to home
         first to reach it
         """
-    def scan_frame(self, frame: tuple[builtins.int, builtins.int, builtins.int, builtins.int], dpi: typing.Optional[builtins.int] = None, samples: builtins.int = 1, superfine: builtins.bool = False, infrared: builtins.bool = False, clean: builtins.bool = False, clean_quality: builtins.str = 'normal', film: typing.Optional[builtins.str] = None, format: typing.Optional[builtins.str] = None, base_density: typing.Optional[tuple[builtins.float, builtins.float, builtins.float]] = None, lock_white_balance: typing.Optional[builtins.bool] = None, exposures: typing.Optional[typing.Mapping[builtins.str, builtins.int]] = None, focus: typing.Optional[typing.Union[builtins.int, tuple[builtins.float, builtins.float], typing.Literal['auto', 'hold']]] = None, progress: typing.Optional[typing.Any] = None) -> ScanResult:
+    def scan_frame(self, frame: tuple[builtins.int, builtins.int, builtins.int, builtins.int], dpi: typing.Optional[builtins.int] = None, samples: builtins.int = 1, superfine: builtins.bool = False, infrared: builtins.bool = False, clean: builtins.bool = False, clean_quality: builtins.str = 'normal', film: typing.Optional[builtins.str] = None, format: typing.Optional[builtins.str] = None, base_density: typing.Optional[tuple[builtins.float, builtins.float, builtins.float]] = None, lock_white_balance: typing.Optional[builtins.bool] = None, nikon_negative_meter: builtins.bool = False, exposures: typing.Optional[typing.Mapping[builtins.str, builtins.int]] = None, focus: typing.Optional[typing.Union[builtins.int, tuple[builtins.float, builtins.float], typing.Literal['auto', 'hold']]] = None, progress: typing.Optional[typing.Any] = None) -> ScanResult:
         r"""
         Focus, meter, take the pass over `frame`, and optionally clean it
         
@@ -368,7 +407,10 @@ class Session:
         `film` and `format` are as for `discover_frames`, and `base_density` is
         `Discovery.base_density`. `lock_white_balance` defaults to
         `Capabilities.locks_white_balance(film)`. `clean` uses infrared
-        internally and cannot be combined with retained `infrared` output
+        internally and cannot be combined with retained `infrared` output.
+        nkcolor: `nikon_negative_meter` meters as a color negative with the rule
+        a Nikon Scan capture verifies on this unit, and refuses other units.
+        Every host meter image comes back in `meter_passes`
         """
     def meter_frame(self, frame: tuple[builtins.int, builtins.int, builtins.int, builtins.int], infrared: builtins.bool = False, film: typing.Optional[builtins.str] = None, format: typing.Optional[builtins.str] = None, base_density: typing.Optional[tuple[builtins.float, builtins.float, builtins.float]] = None, lock_white_balance: typing.Optional[builtins.bool] = None, progress: typing.Optional[typing.Any] = None) -> builtins.dict[builtins.str, builtins.int]:
         r"""

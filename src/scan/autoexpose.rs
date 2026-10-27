@@ -7,10 +7,14 @@ use crate::{
             Capabilities,
             set_window::{AnalogControl, ScanKind, ScanMode},
         },
+        decode::Samples,
         model::Model,
         window::{Channel, Flags, Window},
     },
-    scan::meter::{Metering, prescan_divisor},
+    scan::{
+        meter::{Metering, prescan_divisor},
+        pass::Pass,
+    },
 };
 use std::collections::BTreeMap;
 
@@ -55,6 +59,41 @@ impl Exposures {
     pub fn iter(&self) -> impl Iterator<Item = (Channel, u32)> + '_ {
         self.0.iter().map(|(&c, &e)| (c, e))
     }
+}
+
+/// nkcolor: one image used to decide a frame's exposure
+#[derive(Debug, Clone)]
+pub struct MeterPass {
+    /// The decoded meter pixels
+    pub samples: Samples,
+    /// The exact SET WINDOW descriptors that produced the pixels
+    pub windows: Vec<Window>,
+    /// Their shape and channel order
+    pub pass: Pass,
+    /// The exposure that produced these pixels
+    pub exposures: Exposures,
+    /// The rectangle metering measured in these pixels, inclusive, as
+    /// `[first line, first pixel, last line, last pixel]`. Lines run along the
+    /// feed. Pixels run along the sensor, counted from the far end, which is
+    /// the orientation of Nikon Scan's builder image
+    pub analyzer_rect: [usize; 4],
+}
+
+/// nkcolor: the evidence retained from one exposure decision
+#[derive(Debug, Clone, Default)]
+pub struct MeteringEvidence {
+    /// The scanner's start-up channel balance, where host metering used it
+    pub startup_exposures: Option<Exposures>,
+    /// Every host meter pass, in capture order
+    pub passes: Vec<MeterPass>,
+}
+
+/// nkcolor: an exposure decision and the evidence that produced it
+#[derive(Debug, Clone, Default)]
+pub struct Metered {
+    /// The exposures selected for the full scan
+    pub exposures: Exposures,
+    pub evidence: MeteringEvidence,
 }
 
 /// How the exposures get decided

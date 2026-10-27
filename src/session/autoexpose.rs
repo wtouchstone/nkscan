@@ -9,7 +9,9 @@ use crate::{
         window::Window,
     },
     scan::{
-        autoexpose::{AutoExposure, Exposures, prescan_windows},
+        autoexpose::{
+            AutoExposure, Exposures, MeterPass, Metered, MeteringEvidence, prescan_windows,
+        },
         meter::{Metering, Step},
         pass::Progress,
         window::Recipe,
@@ -47,6 +49,21 @@ impl Session {
         metering: &Metering,
         on: impl FnMut(usize, Progress) -> ControlFlow<()>,
     ) -> Result<Exposures, Error> {
+        Ok(self
+            .autoexpose_frame_evidence_with(frame, recipe, metering, on)
+            .await?
+            .exposures)
+    }
+
+    /// nkcolor: the same as [`Self::autoexpose_frame_with`], retaining every
+    /// host meter image and the exposure that produced it
+    pub async fn autoexpose_frame_evidence_with(
+        &mut self,
+        frame: Rect,
+        recipe: &Recipe,
+        metering: &Metering,
+        on: impl FnMut(usize, Progress) -> ControlFlow<()>,
+    ) -> Result<Metered, Error> {
         let windows = recipe
             .metering(self.capabilities())
             .windows(self.capabilities(), frame)?;
@@ -55,7 +72,7 @@ impl Session {
         if metering.format.is_none() {
             metering.format = FilmFormat::resolve(None, self.capabilities()).ok();
         }
-        self.autoexpose_with(&windows, &metering, on).await
+        self.autoexpose_with_evidence(&windows, &metering, on).await
     }
 
     /// Meter `windows` and answer their new exposures
@@ -80,8 +97,24 @@ impl Session {
         &mut self,
         windows: &[Window],
         metering: &Metering,
-        mut on: impl FnMut(usize, Progress) -> ControlFlow<()>,
+        on: impl FnMut(usize, Progress) -> ControlFlow<()>,
     ) -> Result<Exposures, Error> {
+        Ok(self
+            .autoexpose_with_evidence(windows, metering, on)
+            .await?
+            .exposures)
+    }
+
+    /// nkcolor: the same as [`Self::autoexpose_with`], retaining the meter
+    /// images and the exposure that produced each one
+    ///
+    /// A unit that meters for itself returns no images, so its evidence is empty
+    pub async fn autoexpose_with_evidence(
+        &mut self,
+        windows: &[Window],
+        metering: &Metering,
+        mut on: impl FnMut(usize, Progress) -> ControlFlow<()>,
+    ) -> Result<Metered, Error> {
         let mechanism = AutoExposure::choose(self.capabilities(), metering)?;
         debug!(?mechanism, "metering");
 
@@ -107,7 +140,10 @@ impl Session {
                         exposures.set(w.channel(), metered.exposure);
                     }
                 }
-                Ok(exposures)
+                Ok(Metered {
+                    exposures,
+                    evidence: MeteringEvidence::default(),
+                })
             }
 
             AutoExposure::Host(metering) => {
@@ -117,19 +153,30 @@ impl Session {
                 // measured at start-up, and Nikon Scan meters from it
                 let seeded = self.seed_white_balance(windows).await?;
                 let base: Vec<u32> = seeded.iter().map(|w| w.exposure).collect();
+                let startup_exposures = Exposures::read(&seeded);
 
                 let mut windows = prescan_windows(self.capabilities(), &seeded);
                 for (w, e) in windows.iter_mut().zip(metering.seed(&seeded, &base)) {
                     w.exposure = e;
                 }
-                let mut samples = Samples::default();
+                // nkcolor: each pass keeps its own pixels, windows and exposures
+                let mut passes = Vec::new();
                 for pass in 1.. {
+                    let mut samples = Samples::default();
                     let taken = self
                         .scan_pass_with(&windows, PASS_TIMEOUT, &mut samples, |p| on(pass, p))
                         .await?;
                     let image = Image::new(&taken.layout, &samples)?;
                     let step = metering.step(self.capabilities(), &image, &windows, &base, pass)?;
                     debug!(pass, ?step, "metering pass");
+                    let crop = metering.crop(self.capabilities(), &windows[0], &image);
+                    passes.push(MeterPass {
+                        samples,
+                        windows: windows.clone(),
+                        pass: taken,
+                        exposures: Exposures::read(&windows),
+                        analyzer_rect: [crop.y.0, crop.x.0, crop.y.1, crop.x.1],
+                    });
                     let (Step::Again(next) | Step::Done(next)) = &step;
                     for (w, &exposure) in windows.iter_mut().zip(next) {
                         w.exposure = exposure;
@@ -138,7 +185,13 @@ impl Session {
                         break;
                     }
                 }
-                Ok(Exposures::read(&windows))
+                Ok(Metered {
+                    exposures: Exposures::read(&windows),
+                    evidence: MeteringEvidence {
+                        startup_exposures: Some(startup_exposures),
+                        passes,
+                    },
+                })
             }
         }
     }

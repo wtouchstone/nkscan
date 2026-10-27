@@ -10,7 +10,7 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use nkscan::{
     device,
     error::Error,
-    protocol::decode::Samples,
+    protocol::{caps::other::DataTypes, decode::Samples, window::Channel},
     scan::{
         autoexpose::Exposures,
         focus::Focus,
@@ -116,6 +116,8 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
         unlock_wb,
         lock_wb,
         lock_ae,
+        meter: save_meter,
+        nikon_meter,
         dpi,
         samples,
         superfine,
@@ -134,6 +136,9 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
     // the dust on it
     if film == Film::MonochromeNegative && (ir || clean) {
         bail!("--ir and --clean do not work on black and white negatives");
+    }
+    if nikon_meter && film != Film::Negative {
+        bail!("--nikon-meter only works with --film negative");
     }
 
     // What the scans get tagged with, which follows the film type
@@ -290,12 +295,18 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
             let options = frame::Options {
                 exposures: locked.as_ref(),
                 metering,
+                nikon_negative_meter: nikon_meter,
                 clean,
                 clean_quality: match clean_quality {
                     cli::CleanQuality::Normal => nkscan::dust::Quality::Normal,
                     cli::CleanQuality::Fine => nkscan::dust::Quality::Fine,
                 },
                 focus: Focus::default(),
+            };
+            let setup_before = if save_meter {
+                setup_records(session).await
+            } else {
+                Vec::new()
             };
             let scanned = frame::scan_frame_with(
                 session,
@@ -350,10 +361,37 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
             if let Some(bar) = scan_bar {
                 crate::progress::done(bar);
             }
+            let setup_after = if save_meter {
+                setup_records(session).await
+            } else {
+                Vec::new()
+            };
 
             info!(frame = n + 1, exposures = ?scanned.exposures, "metered");
             if lock_ae {
                 locked.get_or_insert_with(|| scanned.exposures.clone());
+            }
+
+            if save_meter && let Some(metering) = &scanned.metering {
+                let written = io::write_meter_evidence(
+                    &basename,
+                    first + n,
+                    metering,
+                    &scanned.exposures,
+                    &scanned.windows,
+                    &setup_before,
+                    &setup_after,
+                    nikon_meter,
+                )?;
+                info!(
+                    frame = n + 1,
+                    "wrote {}",
+                    written
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
             }
 
             let pass = scanned.pass;
@@ -445,6 +483,26 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
         wait_for_film(session, prompt, cartridge).await?;
     }
     Ok(())
+}
+
+async fn setup_records(session: &mut Session) -> Vec<(Channel, Vec<u8>)> {
+    if !session
+        .capabilities()
+        .features
+        .data_types
+        .contains(DataTypes::SETUP_READ)
+    {
+        return Vec::new();
+    }
+
+    let mut records = Vec::new();
+    for channel in [Channel::Red, Channel::Green, Channel::Blue] {
+        match session.setup_record(channel.id()).await {
+            Ok(record) => records.push((channel, record)),
+            Err(error) => warn!(?channel, %error, "could not capture setup record"),
+        }
+    }
+    records
 }
 
 /// Whether to meter the channels as one group, from the film type and whatever
