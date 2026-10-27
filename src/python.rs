@@ -27,6 +27,7 @@ use crate::{
         meter::Metering,
         pass::{Pass, Progress},
         profile::{self, Film},
+        thumbnail,
         window::{MAX_SAMPLES, Recipe},
     },
     session::{Session as RustSession, block_on},
@@ -314,6 +315,10 @@ pub struct PyCapabilities {
     x_dpi_range: (u16, u16),
     y_dpi_range: (u16, u16),
     optical_dpi: u16,
+    /// Full scanner-address width across the sensor bar
+    x_boundary: u32,
+    /// Full scanner-address length along the film transport
+    y_boundary: u32,
 
     // What follows is for a caller deciding which controls to offer. Every
     // field is read off the unit's own pages, so a control gated on one is
@@ -324,6 +329,8 @@ pub struct PyCapabilities {
     thumbnail_dpi: (u16, u16),
     /// Focus positions the unit accepts
     focus_range: (u16, u16),
+    /// nkcolor: exposure values the unit accepts, in the scanner's native units
+    exposure_range: (u32, u32),
     /// Most readings of one line a pass may ask for. 1 where the unit reads a
     /// line one time, so a multi-sample control can be hidden
     max_samples: u8,
@@ -454,6 +461,8 @@ impl From<&RustCapabilities> for PyCapabilities {
                 caps.address.y_axis.dpi_range.last,
             ),
             optical_dpi: caps.address.x_axis.optical_dpi,
+            x_boundary: caps.address.x_axis.boundary,
+            y_boundary: caps.address.y_axis.boundary,
 
             max_frames: caps.address.max_frames,
             thumbnail_dpi: (
@@ -463,6 +472,10 @@ impl From<&RustCapabilities> for PyCapabilities {
             focus_range: (
                 caps.address.focus_range.start,
                 caps.address.focus_range.last,
+            ),
+            exposure_range: (
+                caps.set_window.exposure.start,
+                caps.set_window.exposure.last,
             ),
             // 2-10 byte 43: a unit that does not offer the mode reads a line
             // once, and refuses a window that asks for more
@@ -595,6 +608,17 @@ fn meter_pass_to_python(
     )
 }
 
+/// nkcolor: the index of the thumbnail column whose feed address is nearest `address`
+fn nearest_column(columns: &[u32], address: u32) -> usize {
+    let after = columns.partition_point(|&c| c < address);
+    match (after.checked_sub(1), columns.get(after)) {
+        (Some(before), Some(&next)) if address - columns[before] <= next - address => before,
+        (_, Some(_)) => after,
+        (Some(before), None) => before,
+        (None, None) => 0,
+    }
+}
+
 fn channel_name(id: u8) -> String {
     format!("{:?}", Channel::from(id)).to_lowercase()
 }
@@ -665,6 +689,54 @@ pub struct PyDiscovery {
     base_density: Option<(f64, f64, f64)>,
     /// This discovery as bytes, for `Session.resume_frames` in a later session
     cache: Py<PyBytes>,
+    /// nkcolor: the scanner-address rectangle covered by `thumbnail`
+    thumbnail_bounds: Option<(u32, u32, u32, u32)>,
+    /// nkcolor: each frame's first and last thumbnail column and its feed
+    /// extent, where the unit positions the film by its perforation table.
+    /// Read off `column_addresses`
+    thumbnail_frames: Option<Vec<(usize, usize, u32)>>,
+}
+
+/// nkcolor: what the fork adds to a discovery. It needs the unit's
+/// capabilities, so it is worked out while the session is held
+struct DiscoveryExtras {
+    thumbnail_bounds: Option<(u32, u32, u32, u32)>,
+    thumbnail_frames: Option<Vec<(usize, usize, u32)>>,
+}
+
+impl DiscoveryExtras {
+    fn of(caps: &RustCapabilities, discovery: &framing::Discovery) -> Result<Self, Error> {
+        // The thumbnail columns each frame spans
+        let thumbnail_frames = match (&discovery.column_addresses, Framing::choose(caps)) {
+            (Some(columns), Framing::Perforation) => Some(
+                discovery
+                    .frames
+                    .iter()
+                    .map(|r| {
+                        (
+                            nearest_column(columns, r.top),
+                            nearest_column(columns, r.bottom),
+                            r.bottom.saturating_sub(r.top),
+                        )
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        };
+        // The scanner-address rectangle the thumbnail covers
+        let thumbnail_bounds = match discovery.thumbnail {
+            Some(_) => thumbnail::windows(caps)?.first().map(|window| {
+                let (left, top) = window.origin;
+                let (width, height) = window.size;
+                (top, left, top + height, left + width)
+            }),
+            None => None,
+        };
+        Ok(Self {
+            thumbnail_bounds,
+            thumbnail_frames,
+        })
+    }
 }
 
 impl PyDiscovery {
@@ -673,6 +745,7 @@ impl PyDiscovery {
         discovery: framing::Discovery,
         samples: Samples,
         cache: Vec<u8>,
+        extras: DiscoveryExtras,
     ) -> Self {
         let thumbnail = discovery.thumbnail.as_ref().map(|pass| {
             let ids: Vec<u8> = pass.layout.colors().collect();
@@ -693,6 +766,8 @@ impl PyDiscovery {
             thumbnail_blocks: discovery.thumbnail.as_ref().map(|p| p.blocks),
             base_density: discovery.base_density.map(|[r, g, b]| (r, g, b)),
             cache: PyBytes::new(py, &cache).unbind(),
+            thumbnail_bounds: extras.thumbnail_bounds,
+            thumbnail_frames: extras.thumbnail_frames,
         }
     }
 }
@@ -811,7 +886,7 @@ impl PySession {
         let format = format_from_name(format)?;
         let film = film.map(film_from_name).transpose()?.unwrap_or_default();
 
-        let (discovery, samples, cache) = py.detach(move || {
+        let (discovery, samples, cache, extras) = py.detach(move || {
             self.with(|session| {
                 let mut samples = Samples::default();
                 let discovery = block_on(framing::discover_with(
@@ -822,10 +897,11 @@ impl PySession {
                     |p| report(&progress, "discover", 0, p),
                 ))?;
                 let cache = discovery.to_bytes(session.capabilities(), film, format, &samples)?;
-                Ok((discovery, samples, cache))
+                let extras = DiscoveryExtras::of(session.capabilities(), &discovery)?;
+                Ok((discovery, samples, cache, extras))
             })
         })?;
-        Ok(PyDiscovery::new(py, discovery, samples, cache))
+        Ok(PyDiscovery::new(py, discovery, samples, cache, extras))
     }
 
     /// Use a `Discovery.cache` from an earlier session, if the film did not change since
@@ -854,11 +930,17 @@ impl PySession {
                     format,
                     &mut samples,
                 ))?;
-                Ok(resumed.map(|discovery| (discovery, samples, cache)))
+                resumed
+                    .map(|discovery| {
+                        let extras = DiscoveryExtras::of(session.capabilities(), &discovery)?;
+                        Ok((discovery, samples, cache, extras))
+                    })
+                    .transpose()
             })
         })?;
-        Ok(resumed
-            .map(|(discovery, samples, cache)| PyDiscovery::new(py, discovery, samples, cache)))
+        Ok(resumed.map(|(discovery, samples, cache, extras)| {
+            PyDiscovery::new(py, discovery, samples, cache, extras)
+        }))
     }
 
     /// The number of times the unit reported that the medium may have changed (`28h-00h`)
