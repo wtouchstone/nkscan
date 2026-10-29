@@ -14,7 +14,7 @@ These changes are local to the nkcolor fork. NKCOLOR.md explains each one.
 - `scan --meter` saves each meter image, its exposure, its measured rectangle (`analyzer_rect=`), every SET WINDOW record and the 8Dh setup records (`format=nkscan-meter-v2`). `Session::setup_record` returns the raw setup bytes. `Session::autoexpose_frame_evidence_with` and `autoexpose_with_evidence` return the meter passes.
 - `scan --nikon-meter` and `scan_frame(nikon_negative_meter=True)` meter as a color negative with upstream's Nikon Scan port, on the LS-50, LS-5000 and LS-8000 only. `ScanResult.meter_passes` and `meter_startup_exposures` keep the evidence.
 - `meter::ls8000`: the LS-8000 film curve and analyzer from LS8000.md3. Upstream's metering uses it for color negatives on the LS-8000.
-- `scan --exposure`, `--focus`, `--focus-position`, `--refocus-before-scan`, `--frame-rect-for`, `--frame-offset`, `--frame-offset-for`, `--overscan`, `--superfine-pair` and `--clean-quality`, and the `clean` command for a saved scan.
+- `scan --exposure`, `--focus`, `--focus-position`, `--refocus-before-scan`, `--frame-rect-for`, `--base-density`, `--frame-offset`, `--frame-offset-for`, `--overscan`, `--superfine-pair` and `--clean-quality`, and the `clean` command for a saved scan.
 - `nkscan calibrate`, `Session::calibrate_shading` and Python `Capabilities.calibrate`: Nikon Scan's Calibrate, run only on request.
 - `NKSCAN_PROGRESS_LINES` machine progress, and `NKSCAN_FRAME_REQUEST`, `NKSCAN_FRAME_POSITION` and `NKSCAN_SET_WINDOW` log records.
 - Python: `clean_rgb_ir`, `Capabilities.exposure_range`, `x_boundary` and `y_boundary`, `Discovery.thumbnail_bounds` and `thumbnail_frames`, and `focus_frame(at=...)` for the fork's earlier call.

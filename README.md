@@ -46,7 +46,8 @@ or focus again just before the scan.
 
 **Reuse frame positions** (`--frame-rect-for`)
 Scans frames that an earlier thumbnail already found, without another thumbnail
-pass.
+pass. Give that thumbnail's film base with `--base-density` so metering uses it,
+as a full run does.
 
 **Move a frame** (`--frame-offset`, `--frame-offset-for`)
 Shifts a frame along or across the film when the detected position is off.
