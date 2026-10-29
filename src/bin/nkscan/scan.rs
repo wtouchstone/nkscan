@@ -139,6 +139,7 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
         frame_offsets,
         overscan,
         frame_rects,
+        base_density: supplied_base,
         ir,
         clean,
         clean_quality,
@@ -334,8 +335,12 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
             );
             // Upstream's frame::at_frame registers each rectangle against the
             // table the unit holds, so a saved table needs no restoring here.
-            // No thumbnail measured the base, so metering uses Nikon Scan's default
-            (select_supplied_frames(&frame_rects, &frames)?, None)
+            // The thumbnail that found these rectangles also measured the film
+            // base; with it, metering matches upstream. Without it, metering
+            // uses Nikon Scan's default
+            let base_density = <[f64; 3]>::try_from(supplied_base.as_slice()).ok();
+            info!(?base_density, "film base density for the meter");
+            (select_supplied_frames(&frame_rects, &frames)?, base_density)
         };
 
         // Every frame on this strip is metered against the base its thumbnail measured

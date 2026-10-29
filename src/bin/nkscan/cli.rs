@@ -51,6 +51,18 @@ fn parse_frame_rect(value: &str) -> Result<(usize, Rect), String> {
     }
 }
 
+/// One film base density: a finite density from 0 to 4
+fn parse_base_density(value: &str) -> Result<f64, String> {
+    let density: f64 = value
+        .parse()
+        .map_err(|_| format!("'{value}' is not a density"))?;
+    if density.is_finite() && (0.0..=4.0).contains(&density) {
+        Ok(density)
+    } else {
+        Err(format!("'{value}' is outside 0 to 4"))
+    }
+}
+
 /// The version, plus the notices for what is compiled in alongside our own code
 ///
 /// `-V` stays the bare version; this is what `--version` gives
@@ -229,6 +241,19 @@ pub struct Scan {
     )]
     pub frame_rects: Vec<(usize, Rect)>,
 
+    /// The film base density that the earlier thumbnail pass measured, for
+    /// the meter. Upstream meters every frame against the base its own
+    /// thumbnail measured; this gives a run that reuses that thumbnail the
+    /// same base. Without it the meter uses Nikon Scan's default.
+    #[arg(
+        long,
+        num_args = 3,
+        value_names = ["RED", "GREEN", "BLUE"],
+        value_parser = parse_base_density,
+        requires = "frame_rects"
+    )]
+    pub base_density: Vec<f64>,
+
     /// Include the IR pass
     #[arg(long, conflicts_with = "clean")]
     pub ir: bool,
@@ -286,7 +311,9 @@ fn parse_focus_fraction(flag: &str) -> Result<f32, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, Cli, parse_focus_fraction, parse_frame_offset, parse_frame_rect};
+    use super::{
+        Action, Cli, parse_base_density, parse_focus_fraction, parse_frame_offset, parse_frame_rect,
+    };
     use clap::Parser;
     use nkscan::protocol::{caps::film::FilmFormat, data::Rect};
 
@@ -363,6 +390,32 @@ mod tests {
         };
         assert_eq!(scan.frames, vec![2]);
         assert_eq!(scan.frame_rects.len(), 2);
+    }
+
+    #[test]
+    fn a_reused_thumbnail_carries_its_film_base() {
+        let cli = Cli::try_parse_from([
+            "nkscan",
+            "scan",
+            "--frame-rect-for",
+            "1:10:0:110:40",
+            "--base-density",
+            "0.416",
+            "0.773",
+            "1.062",
+        ])
+        .unwrap();
+        let Action::Scan(scan) = cli.action else {
+            panic!("scan action");
+        };
+        assert_eq!(scan.base_density, vec![0.416, 0.773, 1.062]);
+        // A run that takes its own thumbnail measures its own base
+        assert!(
+            Cli::try_parse_from(["nkscan", "scan", "--base-density", "0.4", "0.7", "1.0"]).is_err()
+        );
+        assert!(parse_base_density("-0.1").is_err());
+        assert!(parse_base_density("NaN").is_err());
+        assert!(parse_base_density("inf").is_err());
     }
 
     #[test]
