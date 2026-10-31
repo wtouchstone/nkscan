@@ -32,6 +32,10 @@ pub struct Metering {
     pub format: Option<FilmFormat>,
     /// The film base density per channel off the thumbnail; `None` uses Nikon Scan's defaults
     pub base_density: Option<[f64; 3]>,
+    /// nkcolor: on an LS-8000 color negative, expose each channel to its own
+    /// film base instead of Nikon Scan's shared black point. Nikon's exposures
+    /// are still worked out and kept in the evidence. `false` scans at Nikon's
+    pub own_film_base: bool,
 }
 
 impl Default for Metering {
@@ -47,6 +51,25 @@ pub(crate) enum Step {
     Again(Vec<u32>),
     /// Scan at these
     Done(Vec<u32>),
+    /// nkcolor: scan at `scan`; Nikon Scan would scan at `nikon`
+    DoneOwnBase { scan: Vec<u32>, nikon: Vec<u32> },
+}
+
+impl Step {
+    /// The exposures of the next pass
+    pub(crate) fn next(&self) -> &[u32] {
+        match self {
+            Step::Again(next) | Step::Done(next) | Step::DoneOwnBase { scan: next, .. } => next,
+        }
+    }
+
+    /// Nikon Scan's exposures for the full scan, once metering is done
+    pub(crate) fn nikon(&self) -> Option<&[u32]> {
+        match self {
+            Step::Again(_) => None,
+            Step::Done(next) | Step::DoneOwnBase { nikon: next, .. } => Some(next),
+        }
+    }
 }
 
 /// Nikon Scan's infrared target, 85% of full scale (Mac `100a005c`)
@@ -67,6 +90,7 @@ impl Metering {
             film,
             format: None,
             base_density: None,
+            own_film_base: true,
         }
     }
 
@@ -189,15 +213,37 @@ impl Metering {
                 percentile: self.percentile,
             };
             let metered = if ls8000 {
-                ls8000::exposures(&planes, crop, &inputs)
+                ls8000::exposures(&planes, crop, &inputs).map(CurveExposures::Ls8000)
             } else {
-                negative::exposures(&planes, crop, &inputs)
+                negative::exposures(&planes, crop, &inputs).map(CurveExposures::Nikon)
             };
-            let Some(mut metered) = metered else {
-                warn!("the prescan gave the film curve nothing to place; scanning as prescanned");
-                return Ok(Step::Done(self.limit(caps, next)));
+            let (mut metered, own_base) = match metered {
+                Some(CurveExposures::Nikon(nikon)) => (nikon, None),
+                Some(CurveExposures::Ls8000(set)) => (set.nikon, Some(set.own_base)),
+                None => {
+                    warn!(
+                        "the prescan gave the film curve nothing to place; scanning as prescanned"
+                    );
+                    return Ok(Step::Done(self.limit(caps, next)));
+                }
             };
-            debug!(?metered, "off the film curve");
+            debug!(?metered, ?own_base, "off the film curve");
+            // nkcolor: scan each LS-8000 channel at its own film base, and keep
+            // Nikon's exposures beside it. A locked white balance keeps Nikon's
+            if let Some(own_base) =
+                own_base.filter(|_| self.own_film_base && !self.lock_white_balance)
+                && own_base != metered
+            {
+                let mut scan = next.clone();
+                for (c, &plane) in [r, g, b].iter().enumerate() {
+                    next[colors[plane]] = metered[c];
+                    scan[colors[plane]] = own_base[c];
+                }
+                return Ok(Step::DoneOwnBase {
+                    scan: self.limit(caps, scan),
+                    nikon: self.limit(caps, next),
+                });
+            }
             if self.lock_white_balance {
                 // The smallest factor of the three, so that no channel clips
                 let k = (0..3)
@@ -291,6 +337,14 @@ impl Metering {
             .map(|e| e.clamp(limit.start, limit.last.min(MAX_EXPOSURE)))
             .collect()
     }
+}
+
+/// nkcolor: what the film curve gave
+enum CurveExposures {
+    /// Nikon Scan's exposures
+    Nikon([u32; 3]),
+    /// The LS-8000's, with each channel's own film base exposure beside Nikon's
+    Ls8000(ls8000::Final),
 }
 
 /// nkcolor: whether a captured Nikon Scan session verifies the color negative meter on `model`
@@ -829,14 +883,91 @@ mod tests {
         let step = metering
             .step(&ls8000(), &image, &ls8000_windows(&metered), &base, 3)
             .unwrap();
-        assert_eq!(step, Step::Done(vec![879020, 3701152, 4671874]));
+        assert_eq!(step.nikon(), Some([879020, 3701152, 4671874].as_slice()));
 
         let mut ls9000 = unit();
         ls9000.identity.product = "LS-9000 ED".into();
         let step = metering
             .step(&ls9000, &image, &ls8000_windows(&metered), &base, 3)
             .unwrap();
-        assert_ne!(step, Step::Done(vec![879020, 3701152, 4671874]));
+        assert_ne!(step.nikon(), Some([879020, 3701152, 4671874].as_slice()));
+    }
+
+    /// nkcolor: on the LS-8000 builder record, each channel is exposed to its
+    /// own thinnest point. Red sets Nikon's black point and keeps Nikon's
+    /// exposure; green and blue get more light, by 10^(thinnest − Nikon's)
+    #[test]
+    fn an_ls8000_negative_is_exposed_to_each_channels_own_film_base() {
+        let (planes, width, height) = builder_record(
+            include_bytes!("../../../tests/data/nikon-builder-ls8000-20260910.bin"),
+            6,
+        );
+        let image = record_image(&planes, width, height);
+        let base = [275778, 339801, 282416];
+        let metered = [457678, 3298679, 9845379];
+        let nikon = vec![879020, 3701152, 4671874];
+        let metering = Metering {
+            format: Some(FilmFormat::F645),
+            ..Metering::new(Film::Negative)
+        };
+        let step = metering
+            .step(&ls8000(), &image, &ls8000_windows(&metered), &base, 3)
+            .unwrap();
+        let Step::DoneOwnBase { scan, nikon: kept } = &step else {
+            panic!("an LS-8000 negative is scanned at its own film base, this said {step:?}");
+        };
+        assert_eq!(kept, &nikon);
+        assert_eq!(step.nikon(), Some(nikon.as_slice()));
+        assert_eq!(step.next(), scan.as_slice());
+
+        // Each channel's thinnest point, on the builder's scale, from the 12 limits
+        let curve = ls8000::curve();
+        let inputs = negative::Inputs {
+            base,
+            prescan: metered,
+            base_density: DEFAULT_BASE_DENSITY,
+            curve: &curve,
+            percentile: 1.0,
+        };
+        let crop = metering.crop(&ls8000(), &ls8000_windows(&[1])[0], &image);
+        let ranges = ls8000::ranges(&image, crop, &inputs).unwrap();
+        let thinnest: [f64; 3] = std::array::from_fn(|c| {
+            let code = f64::from(ranges.high[c]) * f64::from(base[c]) / f64::from(metered[c]);
+            (65535.0 / code).log10()
+        });
+        // Red sets the black point: Nikon's exposure is its own thinnest point
+        assert_eq!(scan[0], nikon[0]);
+        for c in 1..3 {
+            let aligned = (f64::from(nikon[c]) / f64::from(base[c])).log10();
+            assert!(thinnest[c] > aligned, "channel {c}");
+            let want = f64::from(nikon[c]) * 10f64.powf(thinnest[c] - aligned);
+            assert!(
+                (f64::from(scan[c]) - want).abs() <= 2.0,
+                "channel {c}: {} against {want}",
+                scan[c]
+            );
+        }
+        // Blue's own base is 0.39 thinner than Nikon exposes it for
+        assert!(f64::from(scan[2]) / f64::from(nikon[2]) > 2.4);
+
+        // Asked for Nikon's exposures, the scan uses them
+        let nikon_metering = Metering {
+            own_film_base: false,
+            ..metering
+        };
+        let step = nikon_metering
+            .step(&ls8000(), &image, &ls8000_windows(&metered), &base, 3)
+            .unwrap();
+        assert_eq!(step, Step::Done(nikon.clone()));
+        // A locked white balance keeps Nikon's balance too
+        let locked = Metering {
+            lock_white_balance: true,
+            ..metering
+        };
+        let step = locked
+            .step(&ls8000(), &image, &ls8000_windows(&metered), &base, 3)
+            .unwrap();
+        assert!(matches!(step, Step::Done(_)), "{step:?}");
     }
 
     /// nkcolor: an underexposed first LS-8000 meter image is metered again before the analyzer

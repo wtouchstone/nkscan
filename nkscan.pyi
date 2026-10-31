@@ -334,6 +334,13 @@ class ScanResult:
         Every decoded meter pass and the exposure that produced it
         """
     @property
+    def meter_nikon_exposures(self) -> typing.Optional[builtins.dict[builtins.str, builtins.int]]:
+        r"""
+        Nikon Scan's exposures for the frame, keyed the same way as `exposures`.
+        On an LS-8000 color negative, `exposures` exposes each channel to its
+        own film base and this keeps Nikon's
+        """
+    @property
     def cleaned(self) -> typing.Optional[builtins.int]:
         r"""
         Pixels dust removal rebuilt, where asked for

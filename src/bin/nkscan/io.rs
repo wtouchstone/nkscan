@@ -208,6 +208,10 @@ pub fn write_meter_evidence(
         written.push(path);
     }
     record.push_str(&format!("selected={}\n", exposure_text(selected)));
+    // nkcolor: Nikon Scan's exposures, where the full scan used others
+    if let Some(nikon) = &evidence.nikon_exposures {
+        record.push_str(&format!("nikon_final={}\n", exposure_text(nikon)));
+    }
 
     let windows_path = PathBuf::from(format!("{}_{}_scan_windows.bin", basename.display(), frame));
     write_windows(&windows_path, full_windows)?;
@@ -539,6 +543,7 @@ mod tests {
                 exposures: exposures.clone(),
                 analyzer_rect: [1, 0, 2, 3],
             }],
+            nikon_exposures: None,
         };
 
         let dir = std::env::temp_dir().join(format!("nkscan-meter-{}", std::process::id()));
@@ -574,6 +579,56 @@ mod tests {
         assert!(
             lines.contains(&"selected=red:10,green:20,blue:30"),
             "{text}"
+        );
+        // No Nikon exposures in the evidence, so no line for them
+        assert!(!text.contains("nikon_final="), "{text}");
+    }
+
+    /// nkcolor: the meter record keeps Nikon Scan's exposures beside the ones
+    /// the full scan used
+    #[test]
+    fn a_meter_record_keeps_nikons_exposures_beside_the_scanned_ones() {
+        use nkscan::scan::autoexpose::MeteringEvidence;
+        let triple = |r, g, b| {
+            let mut e = Exposures::default();
+            e.set(Channel::Red, r);
+            e.set(Channel::Green, g);
+            e.set(Channel::Blue, b);
+            e
+        };
+        let evidence = MeteringEvidence {
+            startup_exposures: Some(triple(10, 20, 30)),
+            passes: Vec::new(),
+            nikon_exposures: Some(triple(637570, 2504657, 3196974)),
+        };
+        let dir = std::env::temp_dir().join(format!("nkscan-nikon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory to write into");
+        let written = write_meter_evidence(
+            &dir.join("scan"),
+            1,
+            &evidence,
+            &triple(816217, 2504657, 5652043),
+            &[],
+            &[],
+            &[],
+            true,
+        )
+        .expect("the evidence");
+        let record = written
+            .iter()
+            .find(|p| p.extension().is_some_and(|e| e == "txt"))
+            .expect("a meter record");
+        let text = std::fs::read_to_string(record).expect("the record");
+        std::fs::remove_dir_all(&dir).ok();
+
+        let lines: Vec<&str> = text.lines().collect();
+        let selected = lines
+            .iter()
+            .position(|l| *l == "selected=red:816217,green:2504657,blue:5652043")
+            .expect("the scanned exposures");
+        assert_eq!(
+            lines[selected + 1],
+            "nikon_final=red:637570,green:2504657,blue:3196974"
         );
     }
 }

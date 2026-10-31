@@ -126,6 +126,7 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
         lock_ae,
         meter: save_meter,
         nikon_meter,
+        nikon_exposures,
         exposure,
         focus,
         focus_position,
@@ -348,6 +349,7 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
             lock_white_balance: hold_white_balance,
             format,
             base_density,
+            own_film_base: !nikon_exposures,
             ..Metering::new(film)
         };
 

@@ -12,7 +12,7 @@ use crate::{
         autoexpose::{
             AutoExposure, Exposures, MeterPass, Metered, MeteringEvidence, prescan_windows,
         },
-        meter::{Metering, Step},
+        meter::Metering,
         pass::Progress,
         window::Recipe,
     },
@@ -161,6 +161,7 @@ impl Session {
                 }
                 // nkcolor: each pass keeps its own pixels, windows and exposures
                 let mut passes = Vec::new();
+                let mut nikon_exposures = None;
                 for pass in 1.. {
                     let mut samples = Samples::default();
                     let taken = self
@@ -177,11 +178,16 @@ impl Session {
                         exposures: Exposures::read(&windows),
                         analyzer_rect: [crop.y.0, crop.x.0, crop.y.1, crop.x.1],
                     });
-                    let (Step::Again(next) | Step::Done(next)) = &step;
-                    for (w, &exposure) in windows.iter_mut().zip(next) {
+                    for (w, &exposure) in windows.iter_mut().zip(step.next()) {
                         w.exposure = exposure;
                     }
-                    if matches!(step, Step::Done(_)) {
+                    // nkcolor: Nikon's exposures, which the full scan may not use
+                    if let Some(nikon) = step.nikon() {
+                        let mut nikon_windows = windows.clone();
+                        for (w, &exposure) in nikon_windows.iter_mut().zip(nikon) {
+                            w.exposure = exposure;
+                        }
+                        nikon_exposures = Some(Exposures::read(&nikon_windows));
                         break;
                     }
                 }
@@ -190,6 +196,7 @@ impl Session {
                     evidence: MeteringEvidence {
                         startup_exposures: Some(startup_exposures),
                         passes,
+                        nikon_exposures,
                     },
                 })
             }

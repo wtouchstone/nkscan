@@ -541,6 +541,10 @@ pub struct PyScanResult {
     meter_startup_exposures: Option<HashMap<String, u32>>,
     /// Every decoded meter pass and the exposure that produced it
     meter_passes: Vec<Py<PyMeterPass>>,
+    /// Nikon Scan's exposures for the frame, keyed the same way as `exposures`.
+    /// On an LS-8000 color negative, `exposures` exposes each channel to its
+    /// own film base and this keeps Nikon's
+    meter_nikon_exposures: Option<HashMap<String, u32>>,
     /// Pixels dust removal rebuilt, where asked for
     cleaned: Option<usize>,
     /// True if all blocks of the pass arrived. If this is false, the planes
@@ -1063,22 +1067,25 @@ impl PySession {
             .map(|(c, e)| (channel_name(c.id()), e))
             .collect();
         // nkcolor: the meter evidence
-        let (meter_startup_exposures, meter_passes) = match scanned.metering {
+        let (meter_startup_exposures, meter_nikon_exposures, meter_passes) = match scanned.metering
+        {
             Some(metering) => {
-                let startup = metering.startup_exposures.map(|values| {
+                let by_name = |values: Exposures| -> HashMap<String, u32> {
                     values
                         .iter()
                         .map(|(c, e)| (channel_name(c.id()), e))
                         .collect()
-                });
+                };
+                let startup = metering.startup_exposures.map(by_name);
+                let nikon = metering.nikon_exposures.map(by_name);
                 let passes = metering
                     .passes
                     .into_iter()
                     .map(|meter| meter_pass_to_python(py, meter))
                     .collect::<PyResult<Vec<_>>>()?;
-                (startup, passes)
+                (startup, nikon, passes)
             }
-            None => (None, Vec::new()),
+            None => (None, None, Vec::new()),
         };
 
         Ok(PyScanResult {
@@ -1090,6 +1097,7 @@ impl PySession {
             exposures,
             meter_startup_exposures,
             meter_passes,
+            meter_nikon_exposures,
             cleaned: scanned.cleaned,
             complete: scanned.pass.complete,
             blocks: scanned.pass.blocks,

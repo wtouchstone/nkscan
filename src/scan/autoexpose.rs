@@ -86,6 +86,10 @@ pub struct MeteringEvidence {
     pub startup_exposures: Option<Exposures>,
     /// Every host meter pass, in capture order
     pub passes: Vec<MeterPass>,
+    /// The full-scan exposures Nikon Scan's rule gives. They differ from the
+    /// selected exposures only where the fork scans at other exposures: on an
+    /// LS-8000 color negative each channel is exposed to its own film base
+    pub nikon_exposures: Option<Exposures>,
 }
 
 /// nkcolor: an exposure decision and the evidence that produced it

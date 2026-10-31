@@ -15,6 +15,13 @@
 //! With the LS-9000 curve the LS-5000 port gives the wrong green and blue
 //! exposures for that capture. This port gives Nikon's three exposures and all
 //! 12 analyzer limits.
+//!
+//! Nikon sets all three LS-8000 exposures from one shared black point: the
+//! lowest channel's curve height at its thinnest point. The other channels get
+//! less light than their own film base needs, so the raw scan's film base is
+//! not neutral. [`Final::own_base`] is the fork's alternative: each channel is
+//! exposed to its own thinnest point. Nikon's exposures are kept beside it in
+//! [`Final::nikon`].
 
 use super::negative::{Crop, Curve, Inputs};
 use crate::protocol::decode::Image;
@@ -49,8 +56,19 @@ pub(crate) struct Ranges {
     pub balanced_high: [u16; 3],
 }
 
+/// nkcolor: the two sets of LS-8000 scan exposures
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Final {
+    /// Nikon Scan's exposures: every channel aligned to one shared black point
+    pub nikon: [u32; 3],
+    /// Each channel exposed to its own thinnest point. The channel that sets
+    /// Nikon's black point keeps Nikon's exposure, and no channel gets less
+    /// light than Nikon gives it
+    pub own_base: [u32; 3],
+}
+
 /// The scan exposures, or `None` if the crop is empty
-pub(crate) fn exposures(image: &Image, crop: Crop, i: &Inputs) -> Option<[u32; 3]> {
+pub(crate) fn exposures(image: &Image, crop: Crop, i: &Inputs) -> Option<Final> {
     Some(final_exposures(ranges(image, crop, i)?, i))
 }
 
@@ -177,7 +195,7 @@ fn balance_offsets(low: [f64; 3], high: [f64; 3], low_y: [f64; 3], high_y: [f64;
 }
 
 /// The rest of `Process` on the LS-8000: the film curve placement and the three exposures
-pub(crate) fn final_exposures(ranges: Ranges, i: &Inputs) -> [u32; 3] {
+pub(crate) fn final_exposures(ranges: Ranges, i: &Inputs) -> Final {
     let master = i.curve.log_exposure;
     let mut control_x = i.curve.density;
     let base = i.base.map(f64::from);
@@ -224,9 +242,13 @@ pub(crate) fn final_exposures(ranges: Ranges, i: &Inputs) -> [u32; 3] {
     let mut top = (0..3)
         .map(|c| on_shifted(c, low_density[c].min(control_x[c][31])))
         .fold(f64::NEG_INFINITY, f64::max);
-    let mut bottom = (0..3)
-        .map(|c| on_shifted(c, high_density[c].max(control_x[c][0])))
-        .fold(f64::INFINITY, f64::min);
+    let channel_bottom: [f64; 3] =
+        std::array::from_fn(|c| on_shifted(c, high_density[c].max(control_x[c][0])));
+    let mut bottom = channel_bottom.into_iter().fold(f64::INFINITY, f64::min);
+    // nkcolor: the channel whose thinnest point sets Nikon's black point
+    let bottom_channel = (0..3)
+        .min_by(|&a, &b| channel_bottom[a].total_cmp(&channel_bottom[b]))
+        .expect("three channels");
     let factor = high_difference
         .map(|value| 1f64.min(10f64.powf(-4.0 * (value + 0.23))))
         .into_iter()
@@ -251,8 +273,20 @@ pub(crate) fn final_exposures(ranges: Ranges, i: &Inputs) -> [u32; 3] {
         top += (1.2 - upper_span) * (width / contrast);
     }
     let _ = top;
-    std::array::from_fn(|c| {
-        let aligned = interpolate(&control_y[c], &control_x[c], bottom);
-        (base[c] * 10f64.powf(aligned)).trunc() as u32
-    })
+    let aligned: [f64; 3] =
+        std::array::from_fn(|c| interpolate(&control_y[c], &control_x[c], bottom));
+    let nikon = std::array::from_fn(|c| (base[c] * 10f64.powf(aligned[c])).trunc() as u32);
+    // nkcolor: Nikon may leave the black channel some headroom below its
+    // thinnest point (a narrow range moves the black point down). Every channel
+    // keeps that same headroom below its own thinnest point.
+    let headroom = (high_density[bottom_channel] - aligned[bottom_channel]).max(0.0);
+    let own_base = std::array::from_fn(|c| {
+        let lift = (high_density[c] - aligned[c] - headroom).max(0.0);
+        if lift == 0.0 {
+            nikon[c]
+        } else {
+            (base[c] * 10f64.powf(aligned[c] + lift)).trunc() as u32
+        }
+    });
+    Final { nikon, own_base }
 }
