@@ -1,7 +1,7 @@
 # nkcolor fork changes
 
 This file describes every local change from upstream nkscan. Branch `main`
-holds 29 commits on top of upstream `v0.17.0` (`0857681`). Each commit subject
+holds 31 commits on top of upstream `v0.17.0` (`0857681`). Each commit subject
 starts with "nkcolor:".
 
 The 2026-10-27 sync to 0.17.0 is in [Upstream reconciliation](#upstream-reconciliation).
@@ -32,6 +32,7 @@ Files: `src/bin/nkscan/cli.rs`, `src/bin/nkscan/scan.rs`,
 | Save meter evidence | `scan --meter` | Keep each meter image, its exposure, the rectangle metering measured in it, the selected scan exposure, each SET WINDOW record, and the scanner setup records. |
 | Use the verified Nikon negative meter | `scan --nikon-meter` (requires `--meter` and `--film negative`) | Meter as a color negative with upstream's Nikon Scan port, and refuse a scanner that no Nikon builder record verifies. Write `method=nikon-negative` in the meter record. |
 | Use known exposures | `scan --exposure RED GREEN BLUE` | Repeat a measured acquisition without another meter pass. |
+| Scan at Nikon's LS-8000 exposures | `scan --nikon-exposures` (conflicts with `--exposure`) | Turn off [own film base exposure](#ls-8000-own-film-base-exposure) and scan an LS-8000 color negative at Nikon Scan's exposures. |
 | Select focus | `scan --focus X Y` and `scan --focus-position POSITION` | Use a point inside the frame or a known absolute lens position. |
 | Refocus before the scan | `scan --refocus-before-scan` | Run autofocus after metering and immediately before the full pass. |
 | Reuse detected rectangles | repeatable `scan --frame-rect-for FRAME:TOP:LEFT:BOTTOM:RIGHT` | Avoid another strip thumbnail and frame search. Use `--frames` to select entries. Upstream's `frame::at_frame` registers each rectangle against the table the unit holds. Metering uses the film base from `--base-density`, or Nikon Scan's default base density without it. |
@@ -64,6 +65,11 @@ lines are, in order:
 - for each pass: `pass=N dpi= rows= cols= bits= channels=[...] complete= exposures=red:R,green:G,blue:B`
 - for each pass, new in this sync: `analyzer_rect=N LINE0,PIXEL0,LINE1,PIXEL1`
 - `selected=red:R,green:G,blue:B`: the full-scan exposures
+- `nikon_final=red:R,green:G,blue:B`, new on 2026-10-31: Nikon Scan's
+  full-scan exposures. They differ from `selected` only on an LS-8000 color
+  negative, which is exposed to each channel's own film base. Written whenever
+  host metering ran. An older reader skips the line; a record without it was
+  scanned at Nikon's exposures.
 - the setup records before and after the scan
 
 The files also include the meter TIFF files (`_meter_N.tiff`), the SET WINDOW
@@ -139,6 +145,65 @@ Tests (`src/scan/meter/mod.rs`):
 - `a_low_first_ls8000_pass_is_metered_again`: an underexposed first pass is
   metered again before the analyzer.
 - `the_nikon_negative_meter_is_verified_per_unit`.
+
+## LS-8000 own film base exposure
+
+Files: `src/scan/meter/ls8000.rs`, `src/scan/meter/mod.rs`,
+`src/scan/autoexpose.rs`, `src/session/autoexpose.rs`, `src/bin/nkscan/cli.rs`,
+`src/bin/nkscan/scan.rs`, `src/bin/nkscan/io.rs`, `src/python.rs`, and
+`nkscan.pyi`.
+
+Reason (2026-10-31): the raw LS-8000 negative showed a green film base on every
+frame. LS8000.md3 sets all three exposures from one shared black point. That
+point is the lowest channel's curve height at its thinnest point
+(`ls8000::final_exposures`, `bottom`). The other channels are exposed to that
+height, so they get less light than their own film base needs. On the Vision3
+500T roll (frame 000) green sets the point. Red is exposed 0.11 density and blue
+0.25 density short of their own thinnest points, and the raw film base read red
+0.73 and blue 0.47 of green. The LS-50/LS-5000 rule exposes each channel to its
+own thinnest point, so its film base reads near neutral.
+
+Change:
+
+- `ls8000::final_exposures` returns `ls8000::Final`: `nikon`, Nikon Scan's
+  three exposures as before, and `own_base`. In `own_base` each channel is
+  exposed to its own thinnest point, `base × 10^high_density`. The channel that
+  sets the black point keeps Nikon's exposure. When Nikon leaves that channel
+  headroom below its thinnest point (a narrow range moves the black point
+  down), every channel keeps the same headroom. No channel gets less light
+  than Nikon gives it.
+- `Metering::own_film_base` (default `true`) selects `own_base` for the full
+  scan. `Metering::step` then answers `Step::DoneOwnBase { scan, nikon }`. Both
+  lists go through the unit's exposure limit. A locked white balance, other
+  scanners and other film types are unchanged and answer `Step::Done`.
+- `MeteringEvidence::nikon_exposures` keeps Nikon's exposures of every host
+  metering. The meter record writes them as `nikon_final=`, and Python as
+  `ScanResult.meter_nikon_exposures`.
+- `scan --nikon-exposures` sets `own_film_base` to `false`.
+
+nkcolor packages `nikon_final` as the capture manifest's `scan.exposures` and
+the scanned values as `scan.scanned_exposures`. Its Nikon reconstruction
+rescales each channel by Nikon's exposure over the scanned exposure before it
+reads the pixels (`nkcolor.capture.to_nikon_exposures`). The Nikon output
+therefore does not change. The stored raw scan and the raw view keep the
+balanced film base.
+
+Tests:
+
+- `meter::tests::an_ls8000_negative_is_exposed_to_each_channels_own_film_base`:
+  on the 2026-09-10 builder record, Nikon's exposures stay 879020, 3701152,
+  4671874. The scan uses 879020, 3754018, 11429883: red sets the black point
+  and keeps Nikon's value; green and blue are larger by
+  10^(thinnest − Nikon's). `own_film_base = false` and a locked white balance
+  give Nikon's exposures.
+- `meter::tests::an_ls8000_builder_record_is_exposed_as_nikon_exposes_it` now
+  checks Nikon's exposures through `Step::nikon`.
+- `io::tests::a_meter_record_keeps_nikons_exposures_beside_the_scanned_ones` and
+  the no-line case in `a_meter_record_keeps_each_pass_and_its_measured_rectangle`.
+
+Hardware still to check on Windows: the LS-8000 accepts the longer blue
+exposure (2.45 times Nikon's on the builder record) and the scan time it
+gives; the raw film base reads near neutral.
 
 ## Meter evidence
 
@@ -226,6 +291,8 @@ The fork adds these values:
 - `MeterPass` with color pixels, optional infrared pixels, size, resolution,
   exposures and `analyzer_rect` (new in this sync).
 - `ScanResult.meter_startup_exposures` and `ScanResult.meter_passes`.
+- `ScanResult.meter_nikon_exposures` (2026-10-31): Nikon Scan's exposures
+  for the frame. See [LS-8000 own film base exposure](#ls-8000-own-film-base-exposure).
 - `Session.scan_frame(..., nikon_negative_meter=..., overscan=...,
   clean_quality=...)`. `positive` and `frame_offset` are accepted and ignored
   so older callers keep working.
@@ -276,6 +343,10 @@ behavior or offer something better:
   metering, and plain LS-8000 negative metering does too.
 - An unrecognized scanner refuses `--clean` (unchanged from the fork; upstream
   cleans it with the LS-9000 profile).
+- An LS-8000 color negative is scanned at its own film base exposures. A
+  caller that rebuilds Nikon's image must read Nikon's exposures from
+  `nikon_final=` or `ScanResult.meter_nikon_exposures` and rescale the pixels
+  (nkcolor does this in `nkcolor.capture.to_nikon_exposures`).
 
 ## Upstream reconciliation
 

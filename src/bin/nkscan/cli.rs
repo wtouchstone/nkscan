@@ -170,6 +170,12 @@ pub struct Scan {
     #[arg(long, requires = "meter", conflicts_with = "exposure")]
     pub nikon_meter: bool,
 
+    /// On an LS-8000 color negative, scan at Nikon Scan's exposures. Without
+    /// this, each channel is exposed to its own film base so the raw film base
+    /// is neutral; Nikon's exposures are still written to the meter record.
+    #[arg(long, conflicts_with = "exposure")]
+    pub nikon_exposures: bool,
+
     /// Use these red, green, and blue exposure values instead of metering
     #[arg(long, num_args = 3, value_names = ["RED", "GREEN", "BLUE"])]
     pub exposure: Vec<u32>,

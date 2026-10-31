@@ -148,7 +148,12 @@ last line, last pixel. Lines run along the feed, and pixels run along the
 sensor from the far end, as in Nikon Scan's builder image.
 `result.meter_startup_exposures` contains the scanner values that seeded the
 first pass. `result.exposures` contains the values selected for the full scan.
-If the caller supplies `exposures`, the meter list is empty.
+`result.meter_nikon_exposures` contains Nikon Scan's values for the full scan.
+On an LS-8000 color negative the two differ: the scan exposes each channel to
+its own film base, so the raw film base is neutral. Divide a channel by
+`exposures` and multiply by `meter_nikon_exposures` to get the pixels at
+Nikon's exposures. If the caller supplies `exposures`, the meter list is empty
+and `meter_nikon_exposures` is `None`.
 
 ## Nudging frames by hand
 
