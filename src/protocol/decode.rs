@@ -336,6 +336,43 @@ fn sample_at(sample: &[u8]) -> u16 {
     }
 }
 
+/// How the CCD's rows tile the feed: `gap` output columns from each of
+/// `ccd_lines` rows in turn, so a block is `gap * ccd_lines` columns and
+/// column `x` came from row `(x mod block) / gap`. The first column a pass
+/// writes is the first of a block
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Block {
+    /// CCD rows read at once
+    pub ccd_lines: usize,
+    /// Columns from one row before the next row's, the line gap
+    pub gap: usize,
+}
+
+impl Block {
+    /// The tiling a stream shaped like `layout` decodes to
+    pub fn of(layout: &Layout) -> Self {
+        let ccd_lines = if layout
+            .interleaving
+            .contains(ColorInterleaving::MULTILINE_SIMULTANEOUS)
+        {
+            usize::from(layout.ccd_lines).max(1)
+        } else {
+            // A single line, whatever the unit advertises for the three-line mode
+            1
+        };
+        let gap = match ccd_lines {
+            1 => 1,
+            _ => layout.registration_gap as usize,
+        };
+        Self { ccd_lines, gap }
+    }
+
+    /// The CCD row output column `x` came from
+    pub fn row_of(&self, x: usize) -> usize {
+        (x % (self.gap * self.ccd_lines).max(1)) / self.gap.max(1)
+    }
+}
+
 /// Unscrambles a scan into a caller-owned [`Samples`], one plane per channel
 ///
 /// A chunk can end anywhere, so partial blocks are held until the rest arrives
@@ -387,19 +424,7 @@ impl<'a> Decoder<'a> {
         // block of one line of the feed, so repeats sit exactly where they do
         // in the three-line readout
 
-        let ccd_lines = if layout
-            .interleaving
-            .contains(ColorInterleaving::MULTILINE_SIMULTANEOUS)
-        {
-            usize::from(layout.ccd_lines).max(1)
-        } else {
-            // A single line, whatever the unit advertises for the three-line mode
-            1
-        };
-        let gap = match ccd_lines {
-            1 => 1,
-            _ => layout.registration_gap as usize,
-        };
+        let Block { ccd_lines, gap } = Block::of(layout);
         if gap == 0 {
             return Err(bad(format!(
                 "a scanning pitch of {} puts all the CCD rows on one output line, so the decoder cannot separate a multi-line read",
@@ -821,9 +846,12 @@ mod transposed {
         assert!(d.complete());
 
         let (_, cols) = d.shape();
+        let block = Block::of(&l);
         for stage in 0..stages {
             for line in 0..3 {
                 let x = line * gap as usize + stage;
+                // What the scan record tells nkcolor is where the decoder put it
+                assert_eq!(block.row_of(x), line, "column {x}");
                 for pixel in 0..rows {
                     let y = rows - 1 - pixel;
                     for channel in 0..3 {

@@ -40,6 +40,7 @@ Files: `src/bin/nkscan/cli.rs`, `src/bin/nkscan/scan.rs`,
 | Move a frame | `--frame-offset X Y` and repeatable `--frame-offset-for FRAME:X:Y` | Move the rectangle by the user's signed adjustment. Upstream scans the moved rectangle as given. |
 | Overscan a negative | `scan --overscan UNITS` | Expand only the final pass on scanners that address the film directly (`framing::overscan_rect`). Focus and metering use the frame. Negative film only. |
 | Capture a Super Fine pair | `scan --superfine-pair` | Scan the same frame in the normal mode and in Super Fine, with the same window, exposure and focus. See `docs/SUPERFINE_PAIR_CAPTURE.md`. |
+| Record where each pixel came from on the CCD | `<basename>_<n>_ccd.txt` beside every frame, the Super Fine pair too | nkcolor's banding correction keys on the CCD, not on the scan. See [CCD record](#ccd-record). |
 | Clean a saved scan | `nkscan clean` | Run the dust processor on a saved RGB TIFF and its infrared TIFF without a scanner. |
 | Choose the cleaning quality | `scan --clean-quality normal\|fine` (requires `--clean`) | Nikon's Normal or Fine reconstruction. |
 | Emit machine progress | `NKSCAN_PROGRESS_LINES=1` | Give the Web UI stable `NKSCAN_PROGRESS frame= phase= bytes= total=` records without parsing progress-bar drawing. |
@@ -86,6 +87,50 @@ An older reader skips the line.
 `method=generic` now means upstream's metering for the chosen `--film`. It is
 Nikon Scan's rule for every film, but no Nikon builder record verifies it on
 that scanner, so nkcolor must not treat it as complete Nikon evidence.
+
+### CCD record
+
+Files: `src/protocol/decode.rs` (`Block`), `src/scan/pass.rs`
+(`corrects_rows`), `src/session/data.rs` (`fetch_curves` logging),
+`src/bin/nkscan/io.rs` (`write_ccd_record`), and `src/bin/nkscan/scan.rs`.
+
+Reason (2026-10-31): the banding calibration counted lines from the first line
+of each scan and knew nothing about the CCD, so one calibration did not hold
+for the next scan. The user asked that the calibration hold across rolls and
+that it carry the CCD line. The decoder already fixes which CCD row made each
+column; this record writes that down with the scanner address of each row.
+
+The record is `<basename>_<n>_ccd.txt`, `format=nkscan-ccd-v1`. The lines are,
+in order:
+
+- `format=nkscan-ccd-v1`
+- `dpi=`: the pass's resolution
+- `rows=`: image rows, which run along the CCD
+- `ccd_rows=`: CCD rows read at once (1 for a single-line or Super Fine pass)
+- `lines_per_row=`: columns from one CCD row before the next row's (the line
+  gap; 1 for a single-line pass)
+- `first_block_line=0`: the block position of column 0. A pass always writes
+  from the start of a block (`Decoder` emits whole blocks from block 0, and
+  the writer keeps columns from 0).
+- `row_curves=applied|none`: whether the decoder remapped the rows with the
+  unit's CCD curves (`corrects_rows`, the rule `pass::decoder` uses)
+- `address_first=`: the X address of row 0, `origin.x + (rows - 1) * pitch`.
+  The bar reads out opposite to increasing X (`decode.rs`), as the thumbnail's
+  `row_addresses` already assume.
+- `address_step=`: `-pitch`, the X addresses from one row to the next
+
+Column `x` is at `(first_block_line + x) mod (ccd_rows * lines_per_row)` in its
+block and came from CCD row `that / lines_per_row`. Row `y` sat at X address
+`address_first + y * address_step`.
+
+`fetch_curves` now logs at info level whether the session holds the unit's row
+curves, and why not. Before, only debug logging said so.
+
+Tests: `io::tests::a_ccd_record_places_every_column_and_row_on_the_ccd` (the
+record, three-line and single-line);
+`decode::transposed::a_block_tiles_stage_positions_against_ccd_rows` (the
+record's row rule is where the decoder put each column). nkcolor parses the
+same text in `test_banding.py::test_the_ccd_record_reads_what_nkscan_writes`.
 
 ## Nikon negative meter
 

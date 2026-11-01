@@ -546,6 +546,10 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
                 film == Film::MonochromeNegative,
                 ir,
             )?;
+            let origin_x = scanned.windows.first().map_or(0, |w| w.origin.0);
+            let have_curves = session.curves().is_some();
+            let ccd = io::write_ccd_record(&basename, first + n, &pass, origin_x, have_curves)?;
+            info!(frame = n + 1, "wrote {}", ccd.display());
             info!(
                 frame = n + 1,
                 "{} x {} at {} dpi, wrote {}",
@@ -589,6 +593,14 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
                     icc,
                     film == Film::MonochromeNegative,
                     false,
+                )?;
+                let pair_origin = pair_windows.first().map_or(0, |w| w.origin.0);
+                io::write_ccd_record(
+                    &pair_basename,
+                    first + n,
+                    &pair_pass,
+                    pair_origin,
+                    have_curves,
                 )?;
                 info!(
                     frame = n + 1,

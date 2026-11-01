@@ -12,12 +12,12 @@ use anyhow::{Context, Result, bail};
 use nkscan::{
     protocol::{
         data::Setup,
-        decode::{Samples, filled_columns},
+        decode::{Block, Samples, filled_columns},
         window::{Channel, Window},
     },
     scan::{
         autoexpose::{Exposures, MeteringEvidence},
-        pass::Pass,
+        pass::{Pass, corrects_rows},
     },
 };
 use std::{
@@ -144,6 +144,48 @@ pub fn write_frame(
     }
 
     Ok(written)
+}
+
+/// Write where each pixel of frame `n` came from on the CCD, beside its image
+///
+/// nkcolor's banding correction keys on this, so one calibration holds for any
+/// window on any roll. Column `x` is at `(first_block_line + x) mod (ccd_rows *
+/// lines_per_row)` in its block and came from CCD row `that / lines_per_row`.
+/// Row `y` sits at X address `address_first + y * address_step`: the bar reads
+/// out opposite to increasing X, so the first row has the highest address.
+/// `origin_x` is the window's X origin, `have_curves` whether the session holds
+/// the unit's row curves.
+pub fn write_ccd_record(
+    basename: &Path,
+    n: usize,
+    pass: &Pass,
+    origin_x: u32,
+    have_curves: bool,
+) -> Result<PathBuf> {
+    let block = Block::of(&pass.layout);
+    let pitch = pass.layout.pitch.max(1);
+    let rows = pass.rows as u32;
+    let mut record = String::from("format=nkscan-ccd-v1\n");
+    record.push_str(&format!("dpi={}\n", pass.layout.dpi));
+    record.push_str(&format!("rows={rows}\n"));
+    record.push_str(&format!("ccd_rows={}\n", block.ccd_lines));
+    record.push_str(&format!("lines_per_row={}\n", block.gap));
+    record.push_str("first_block_line=0\n");
+    record.push_str(&format!(
+        "row_curves={}\n",
+        match corrects_rows(&pass.layout, have_curves) {
+            true => "applied",
+            false => "none",
+        }
+    ));
+    record.push_str(&format!(
+        "address_first={}\n",
+        origin_x + rows.saturating_sub(1) * pitch
+    ));
+    record.push_str(&format!("address_step=-{pitch}\n"));
+    let path = PathBuf::from(format!("{}_{n}_ccd.txt", basename.display()));
+    fs::write(&path, record).with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
 }
 
 /// Write every image and exposure value retained from one frame's metering
@@ -505,6 +547,50 @@ mod tests {
             .collect();
         assert_eq!(read, want);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The CCD record says which row made each column and where each row sat
+    /// on the CCD, so nkcolor can key a correction on the scanner and not on
+    /// the window
+    #[test]
+    fn a_ccd_record_places_every_column_and_row_on_the_ccd() {
+        use nkscan::protocol::caps::set_window::ColorInterleaving;
+        let (rows, cols) = (5usize, 72usize);
+        let mut layout = Layout::single_line(rows as u32, cols as u32, vec![1, 2, 3]);
+        layout.interleaving = ColorInterleaving::MULTILINE_SIMULTANEOUS;
+        layout.ccd_lines = 3;
+        layout.registration_gap = 12;
+        layout.pitch = 2;
+        layout.dpi = 2000;
+        let pass = Pass {
+            layout,
+            cooperation: Vec::new(),
+            complete: true,
+            blocks: 2,
+            rows,
+            cols,
+        };
+        let dir = std::env::temp_dir().join(format!("nkscan-ccd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory to write into");
+        let path = write_ccd_record(&dir.join("scan"), 3, &pass, 518, true).unwrap();
+        assert_eq!(path, dir.join("scan_3_ccd.txt"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text,
+            "format=nkscan-ccd-v1\ndpi=2000\nrows=5\nccd_rows=3\nlines_per_row=12\n\
+             first_block_line=0\nrow_curves=applied\naddress_first=526\naddress_step=-2\n"
+        );
+
+        // A single-line pass has one row and nothing to remap
+        let mut single = pass.clone();
+        single.layout.interleaving = ColorInterleaving::LINE_WITHOUT_DISTANCE;
+        let text = std::fs::read_to_string(
+            write_ccd_record(&dir.join("fine"), 3, &single, 518, true).unwrap(),
+        )
+        .unwrap();
+        assert!(text.contains("ccd_rows=1\nlines_per_row=1\n"), "{text}");
+        assert!(text.contains("row_curves=none\n"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// nkcolor: the meter record names the method, the start-up and chosen

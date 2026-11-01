@@ -308,14 +308,16 @@ impl Session {
     /// describing it
     pub async fn fetch_curves(&mut self) -> bool {
         let Some(ccd) = self.caps.ccd.clone() else {
+            info!("the unit describes no CCD row curves; multi-line scans keep their rows as read");
             return false;
         };
         let rows = usize::from(self.caps.address.lines).max(1);
         let (_, values) = match self
             .read_data(data::DataType::CcdData, 0)
             .await
-            .inspect_err(|e| debug!(%e, "no CCD curves to correct with"))
-        {
+            .inspect_err(
+                |e| info!(%e, "no CCD row curves; multi-line scans keep their rows as read"),
+            ) {
             Ok(v) => v,
             Err(_) => return false,
         };
@@ -330,6 +332,12 @@ impl Session {
                 points = ccd.points.len(),
                 got = words.len(),
                 "the CCD curves do not match the page describing them, scanning uncorrected"
+            );
+        }
+        if curves.is_some() {
+            info!(
+                rows,
+                "read the CCD row curves; multi-line scans remap their rows with them"
             );
         }
         self.curves = curves.map(Arc::new);

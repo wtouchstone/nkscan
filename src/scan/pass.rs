@@ -86,12 +86,21 @@ pub fn decoder<'a>(
     curves: Option<&'a Curves>,
 ) -> Result<crate::protocol::decode::Decoder<'a>, Error> {
     let decoder = crate::protocol::decode::Decoder::new(layout)?;
-    match curves.filter(|_| {
-        layout
-            .interleaving
-            .contains(ColorInterleaving::MULTILINE_SIMULTANEOUS)
-    }) {
+    match curves.filter(|_| corrects_rows(layout, true)) {
         Some(curves) => Ok(decoder.correcting(curves)),
         None => Ok(decoder),
     }
+}
+
+/// Whether a pass shaped like `layout` has its CCD rows remapped onto each
+/// other, given whether the session holds the unit's curves
+///
+/// Only a three-line read has rows to remap; a single-line pass reads every
+/// sample off one row.
+pub fn corrects_rows(layout: &Layout, have_curves: bool) -> bool {
+    have_curves
+        && layout
+            .interleaving
+            .contains(ColorInterleaving::MULTILINE_SIMULTANEOUS)
+        && crate::protocol::decode::Block::of(layout).ccd_lines > 1
 }
