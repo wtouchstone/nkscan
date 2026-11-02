@@ -335,8 +335,13 @@ impl Session {
             );
         }
         if curves.is_some() {
+            // The levels and every curve, so a capture shows where each row's
+            // remap starts (the rows keep their first point's gain below it)
             info!(
                 rows,
+                types = ccd.types,
+                points = ?ccd.points,
+                words = ?words,
                 "read the CCD row curves; multi-line scans remap their rows with them"
             );
         }

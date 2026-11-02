@@ -79,7 +79,8 @@ impl Curves {
 ///
 /// Both are sampled at the same levels, so the point index is the common ground
 /// and the levels never enter the arithmetic. Between points the two curves are
-/// taken as straight, and outside them the value is left alone.
+/// taken as straight. Under the first point the row keeps the gain it has there,
+/// and above the last the value is left alone.
 fn table(from: &[u16], onto: &[u16]) -> Vec<u16> {
     let mut out = vec![0u16; LEVELS];
     let mut point = 0usize;
@@ -91,11 +92,21 @@ fn table(from: &[u16], onto: &[u16]) -> Vec<u16> {
             point += 1;
         }
 
-        // Below the first point the curves say nothing. Both start at the dark
-        // offset, so mapping into the first segment would lift everything under
-        // it onto that offset and crush the bottom of the range to one value
+        // Below the first point the curves say nothing, and mapping into the
+        // first segment would lift everything under it onto that point and
+        // crush the bottom of the range to one value. The row keeps the gain it
+        // has at the first point instead. Where that point is the dark offset
+        // this moves almost nothing. On the LS-8000 it is a real level: left as
+        // read, raw values under about 1000-1400 kept a +3.5 / -0.9 / -2.7%
+        // row pattern, the same in every color, and dense film banded
+        // (2026-11-01 capture, nkcolor diagnostics/banding-ccd-rows/by_level.py)
         if sample < u32::from(from[0]) {
-            *slot = sample as u16;
+            let (first, target) = (u64::from(from[0]), u64::from(onto[0]));
+            *slot = match first {
+                0 => sample as u16,
+                _ => ((u64::from(sample) * target + first / 2) / first).min(u64::from(u16::MAX))
+                    as u16,
+            };
             continue;
         }
 
@@ -193,11 +204,12 @@ mod tests {
         assert_ne!(u32::from(mean_then_correct), correct_then_mean);
     }
 
-    /// Every curve starts at the sensor's dark offset, and nothing below it was
-    /// measured. Mapping into the first segment would put the whole of the
-    /// bottom of the range onto that offset
+    /// Where every curve starts at the sensor's dark offset, nothing below it
+    /// was measured, and the rows agree there, so the bottom of the range
+    /// comes back as it went in. Mapping into the first segment would put the
+    /// whole of it onto that offset
     #[test]
-    fn samples_under_the_first_point_are_left_alone() {
+    fn samples_under_a_shared_dark_offset_are_left_alone() {
         let ccd = page(&[0, 30000, 60000], 1);
         let high: &[u16] = &[90, 33000, 60000];
         let middle: &[u16] = &[90, 30000, 60000];
@@ -207,6 +219,30 @@ mod tests {
             assert_eq!(c.correct(0, v), v, "sample {v} under the dark offset");
         }
         assert_eq!(c.correct(0, 90), 90);
+    }
+
+    /// Where the first point is a real level, a row that reads high there reads
+    /// high below it too, so it keeps the first point's gain all the way down:
+    /// continuous at the point, and no sample is crushed onto another
+    #[test]
+    fn samples_under_a_real_first_point_keep_its_gain() {
+        let ccd = page(&[5000, 30000, 60000], 1);
+        let high: &[u16] = &[1035, 31050, 60000];
+        let middle: &[u16] = &[1000, 30000, 60000];
+        let low: &[u16] = &[973, 29190, 60000];
+        let c = Curves::parse(&ccd, &words(&[high, middle, low], 1, 0), 3, 0).unwrap();
+
+        assert_eq!(c.correct(0, 1035), 1000);
+        assert_eq!(c.correct(0, 1034), 999);
+        assert_eq!(c.correct(0, 518), 500);
+        assert_eq!(c.correct(2, 584), 600);
+        assert_eq!(c.correct(1, 700), 700);
+        assert_eq!(c.correct(0, 0), 0);
+        let mapped: Vec<u16> = (0..1035u16).map(|v| c.correct(0, v)).collect();
+        assert!(
+            mapped.windows(2).all(|w| w[0] <= w[1]),
+            "the remap must not fold"
+        );
     }
 
     /// A reply that does not match the page it came with is not a table
