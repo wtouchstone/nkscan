@@ -132,6 +132,29 @@ record, three-line and single-line);
 record's row rule is where the decoder put each column). nkcolor parses the
 same text in `test_banding.py::test_the_ccd_record_reads_what_nkscan_writes`.
 
+### CCD rows under the first curve point
+
+Files: `src/protocol/curves.rs` (`table`), `src/session/data.rs`
+(`fetch_curves` logging).
+
+Reason (2026-11-01): after the CCD-keyed banding calibration the user still
+saw banding, mainly in dense film. On the 2026-10-31 LS-8000 capture, raw
+values under about 1000-1400 (14-bit) kept a row pattern of +3.5 / -0.9 /
+-2.7% (rows 0 / 1 / 2), the same in every color; above that level it was
+under 0.4%. Upstream left every sample under a curve's first point as read,
+on the reading that the first point is the dark offset. On this unit it is a
+real level, so dense film kept the rows' raw mismatch. Under the first point
+each row now keeps the gain it has at that point (`sample * onto[0] /
+from[0]`): continuous at the point, and no sample is crushed onto another.
+Where the first point is the dark offset this moves almost nothing.
+
+`fetch_curves` now logs the measurement levels and every curve word at info
+level, so a capture shows where each row's remap starts. The first-point
+level on the LS-8000 is not yet confirmed from such a log.
+
+Tests: `curves::tests::samples_under_a_shared_dark_offset_are_left_alone`,
+`curves::tests::samples_under_a_real_first_point_keep_its_gain`.
+
 ## Nikon negative meter
 
 Files: `src/scan/meter/ls8000.rs`, `src/scan/meter/ls8000-characteristic.bin`,
