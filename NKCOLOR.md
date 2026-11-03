@@ -149,8 +149,12 @@ from[0]`): continuous at the point, and no sample is crushed onto another.
 Where the first point is the dark offset this moves almost nothing.
 
 `fetch_curves` now logs the measurement levels and every curve word at info
-level, so a capture shows where each row's remap starts. The first-point
-level on the LS-8000 is not yet confirmed from such a log.
+level, so a capture shows where each row's remap starts.
+
+Correction (2026-11-02): the LS-8000 has no CCD measurement page, so nkscan
+reads no row curves on it ("the unit describes no CCD row curves") and this
+change does nothing there. The dense-film row pattern on that unit is the
+rows' raw mismatch at every level, not a remap that stops at a first point.
 
 Tests: `curves::tests::samples_under_a_shared_dark_offset_are_left_alone`,
 `curves::tests::samples_under_a_real_first_point_keep_its_gain`.
