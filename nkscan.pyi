@@ -58,6 +58,12 @@ class Capabilities:
         Full scanner-address length along the film transport
         """
     @property
+    def full_width(self) -> builtins.int:
+        r"""
+        nkcolor: the width `scan_frame(full_width=True)` reads, the most whole
+        line-gap blocks the sensor holds. 0 where the unit refuses it
+        """
+    @property
     def max_frames(self) -> builtins.int:
         r"""
         Frames the loaded holder can hold, 0 where the unit publishes no table
@@ -457,7 +463,7 @@ class Session:
         or if the medium changed. Then call `discover_frames`. `format` and `film`
         are the arguments that `discover_frames` got
         """
-    def scan_frame(self, frame: tuple[builtins.int, builtins.int, builtins.int, builtins.int], dpi: typing.Optional[builtins.int] = None, samples: builtins.int = 1, superfine: builtins.bool = False, infrared: builtins.bool = False, clean: builtins.bool = False, clean_quality: builtins.str = 'normal', film: typing.Optional[builtins.str] = None, format: typing.Optional[builtins.str] = None, base_density: typing.Optional[tuple[builtins.float, builtins.float, builtins.float]] = None, lock_white_balance: typing.Optional[builtins.bool] = None, positive: builtins.bool = False, nikon_negative_meter: builtins.bool = False, frame_offset: builtins.int = 0, exposures: typing.Optional[typing.Mapping[builtins.str, builtins.int]] = None, focus: typing.Optional[typing.Union[builtins.int, tuple[builtins.float, builtins.float], typing.Literal['auto', 'hold']]] = None, progress: typing.Optional[typing.Any] = None, overscan: builtins.int = 0) -> ScanResult:
+    def scan_frame(self, frame: tuple[builtins.int, builtins.int, builtins.int, builtins.int], dpi: typing.Optional[builtins.int] = None, samples: builtins.int = 1, superfine: builtins.bool = False, infrared: builtins.bool = False, clean: builtins.bool = False, clean_quality: builtins.str = 'normal', film: typing.Optional[builtins.str] = None, format: typing.Optional[builtins.str] = None, base_density: typing.Optional[tuple[builtins.float, builtins.float, builtins.float]] = None, lock_white_balance: typing.Optional[builtins.bool] = None, positive: builtins.bool = False, nikon_negative_meter: builtins.bool = False, frame_offset: builtins.int = 0, exposures: typing.Optional[typing.Mapping[builtins.str, builtins.int]] = None, focus: typing.Optional[typing.Union[builtins.int, tuple[builtins.float, builtins.float], typing.Literal['auto', 'hold']]] = None, progress: typing.Optional[typing.Any] = None, overscan: builtins.int = 0, full_width: builtins.bool = False) -> ScanResult:
         r"""
         Focus, meter, take the pass over `frame`, and optionally clean it
         

@@ -46,6 +46,9 @@ pub struct Options<'a> {
     /// nkcolor: scanner-address units added around the full pass on a unit
     /// that addresses the film with the window. Focus and metering use `frame`
     pub overscan: u32,
+    /// nkcolor: widen the full pass across the whole sensor, centered on the
+    /// frame ([`framing::full_width_rect`]). Focus and metering use `frame`
+    pub full_width: bool,
     /// nkcolor: meter as a color negative with the rule a Nikon Scan capture
     /// verifies on this unit, whatever `metering.film` says. Refused on a unit
     /// [`meter::nikon_negative_supported`] does not name
@@ -112,7 +115,10 @@ pub async fn scan_frame_with(
         metering.film = crate::scan::profile::Film::Negative;
         metering.lock_white_balance = false;
     }
-    let scan_rect = framing::overscan_rect(session.capabilities(), frame, options.overscan)?;
+    let mut scan_rect = framing::overscan_rect(session.capabilities(), frame, options.overscan)?;
+    if options.full_width {
+        scan_rect = framing::full_width_rect(session.capabilities(), scan_rect)?;
+    }
 
     let (pass, exposures, metering, windows, focused, focus_position) =
         at_frame(session, frame, async |session| {
@@ -135,6 +141,14 @@ pub async fn scan_frame_with(
             }
 
             let mut windows = recipe.windows(session.capabilities(), scan_rect)?;
+            // The recipe keeps a window inside the adapter's opening. The
+            // full width reaches past it on purpose
+            if options.full_width {
+                for w in &mut windows {
+                    w.origin.0 = scan_rect.left;
+                    w.size.0 = scan_rect.right - scan_rect.left;
+                }
+            }
             exposures.apply(&mut windows);
 
             let pass = session
@@ -144,12 +158,13 @@ pub async fn scan_frame_with(
         })
         .await?;
     info!(
-        "NKSCAN_FRAME_POSITION submitted={}:{}:{}:{} overscan={} pass={}:{}:{}:{} complete={} blocks={}",
+        "NKSCAN_FRAME_POSITION submitted={}:{}:{}:{} overscan={} full_width={} pass={}:{}:{}:{} complete={} blocks={}",
         frame.top,
         frame.left,
         frame.bottom,
         frame.right,
         options.overscan,
+        options.full_width,
         scan_rect.top,
         scan_rect.left,
         scan_rect.bottom,

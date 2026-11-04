@@ -543,10 +543,95 @@ pub fn overscan_rect(caps: &Capabilities, frame: Rect, margin: u32) -> Result<Re
     })
 }
 
+/// nkcolor: widen a frame across the whole sensor for a full scan
+///
+/// The adapter's opening limits Nikon Scan to 8964 of the LS-8000's and
+/// LS-9000's 10000 pixels. A holder with a wider opening shows the film's edges
+/// past it, and the unit reads them when asked. The width is the most whole
+/// line-gap blocks the sensor holds, 9996 on these units, so the three-line
+/// readout does not split a block. It is centered on the frame and kept on the
+/// sensor. Y does not change.
+///
+/// A perforation-framed 135 frame is already the complete physical gate, so
+/// it is refused there, as overscan is.
+pub fn full_width_rect(caps: &Capabilities, frame: Rect) -> Result<Rect, Error> {
+    if Framing::choose(caps) == Framing::Perforation {
+        return Err(Error::Unsupported {
+            op: "full sensor width",
+            reason: "a perforation-framed frame is already the complete physical gate".into(),
+        });
+    }
+    let ccd = u32::from(caps.address.ccd_pixels);
+    if ccd == 0 {
+        return Err(Error::Unsupported {
+            op: "full sensor width",
+            reason: "this unit does not report its sensor width".into(),
+        });
+    }
+    let gap = u32::from(caps.address.line_gap).max(1);
+    let width = ccd / gap * gap;
+    let center = (frame.left + frame.right) / 2;
+    let left = center.saturating_sub(width / 2).min(ccd - width);
+    Ok(Rect {
+        left,
+        right: left + width,
+        ..frame
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{protocol::caps::other::DataTypes, scan::window::tests::caps};
+
+    /// Jihoon Chung's note on the LS-9000: the sensor is 10000 pixels, and the
+    /// widest window in whole 12-pixel blocks is 9996
+    #[test]
+    fn full_width_covers_the_sensor_in_whole_blocks() {
+        let mut plain = caps();
+        plain.address.ccd_pixels = 10000;
+        plain.address.line_gap = 12;
+        plain.address.x_axis.address_range = (518..=9481).into();
+        plain.address.x_axis.boundary = 8964;
+        let frame = Rect {
+            top: 3000,
+            left: 518,
+            bottom: 7000,
+            right: 9482,
+        };
+
+        assert_eq!(
+            full_width_rect(&plain, frame).expect("full width"),
+            Rect {
+                top: 3000,
+                left: 2,
+                bottom: 7000,
+                right: 9998,
+            }
+        );
+
+        // A frame off center still keeps the window on the sensor
+        let shifted = Rect {
+            left: 0,
+            right: 4000,
+            ..frame
+        };
+        let wide = full_width_rect(&plain, shifted).expect("full width");
+        assert_eq!((wide.left, wide.right), (0, 9996));
+    }
+
+    #[test]
+    fn full_width_needs_the_sensor_width() {
+        let mut plain = caps();
+        plain.address.ccd_pixels = 0;
+        let frame = Rect {
+            top: 0,
+            left: 0,
+            bottom: 100,
+            right: 100,
+        };
+        assert!(full_width_rect(&plain, frame).is_err());
+    }
 
     #[test]
     fn overscan_expands_an_addressed_frame_without_changing_its_center() {
@@ -627,6 +712,8 @@ mod tests {
         };
 
         let error = overscan_rect(&perforated, frame, 100).expect_err("locked gate path");
+        assert!(format!("{error}").contains("complete physical gate"));
+        let error = full_width_rect(&perforated, frame).expect_err("locked gate path");
         assert!(format!("{error}").contains("complete physical gate"));
     }
 

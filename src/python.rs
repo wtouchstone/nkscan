@@ -319,6 +319,9 @@ pub struct PyCapabilities {
     x_boundary: u32,
     /// Full scanner-address length along the film transport
     y_boundary: u32,
+    /// nkcolor: the width `scan_frame(full_width=True)` reads, the most whole
+    /// line-gap blocks the sensor holds. 0 where the unit refuses it
+    full_width: u32,
 
     // What follows is for a caller deciding which controls to offer. Every
     // field is read off the unit's own pages, so a control gated on one is
@@ -463,6 +466,8 @@ impl From<&RustCapabilities> for PyCapabilities {
             optical_dpi: caps.address.x_axis.optical_dpi,
             x_boundary: caps.address.x_axis.boundary,
             y_boundary: caps.address.y_axis.boundary,
+            full_width: framing::full_width_rect(caps, rect((0, 0, 0, 0)))
+                .map_or(0, |wide| wide.right - wide.left),
 
             max_frames: caps.address.max_frames,
             thumbnail_dpi: (
@@ -994,6 +999,7 @@ impl PySession {
         focus=None,
         progress=None,
         overscan=0,
+        full_width=false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn scan_frame(
@@ -1018,6 +1024,7 @@ impl PySession {
         focus: Option<Bound<'_, PyAny>>,
         progress: Option<Py<PyAny>>,
         overscan: u32,
+        full_width: bool,
     ) -> PyResult<PyScanResult> {
         let _ = (positive, frame_offset);
         if infrared && clean {
@@ -1060,6 +1067,7 @@ impl PySession {
                 let options = frame::Options {
                     refocus_before_scan: false,
                     overscan,
+                    full_width,
                     exposures: locked.as_ref(),
                     metering,
                     nikon_negative_meter,

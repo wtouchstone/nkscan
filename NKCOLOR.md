@@ -39,6 +39,7 @@ Files: `src/bin/nkscan/cli.rs`, `src/bin/nkscan/scan.rs`,
 | Meter with the thumbnail's film base | `scan --base-density RED GREEN BLUE` (requires `--frame-rect-for`) | A run that reuses rectangles takes no thumbnail, so it metered against Nikon Scan's default base. The Web UI passes the base that its thumbnail pass measured (`Discovery.base_density`), so metering matches upstream, which meters every frame against the base its own thumbnail measured. Each value is a finite density from 0 to 4. Reason: on a Fuji roll developed in ECN-2, the default base gave red 9% and blue 28% less light than the measured base, and the raw film base read green (2026-10-29). Test: `cli::tests::a_reused_thumbnail_carries_its_film_base`. |
 | Move a frame | `--frame-offset X Y` and repeatable `--frame-offset-for FRAME:X:Y` | Move the rectangle by the user's signed adjustment. Upstream scans the moved rectangle as given. |
 | Overscan a negative | `scan --overscan UNITS` | Expand only the final pass on scanners that address the film directly (`framing::overscan_rect`). Focus and metering use the frame. Negative film only. |
+| Scan the whole sensor width | `scan --full-width` | Widen only the final pass to the most whole line-gap blocks the sensor holds, centered on the frame (`framing::full_width_rect`). 9996 of 10000 pixels on the LS-8000/9000. Focus and metering use the frame. |
 | Capture a Super Fine pair | `scan --superfine-pair` | Scan the same frame in the normal mode and in Super Fine, with the same window, exposure and focus. See `docs/SUPERFINE_PAIR_CAPTURE.md`. |
 | Record where each pixel came from on the CCD | `<basename>_<n>_ccd.txt` beside every frame, the Super Fine pair too | nkcolor's banding correction keys on the CCD, not on the scan. See [CCD record](#ccd-record). |
 | Clean a saved scan | `nkscan clean` | Run the dust processor on a saved RGB TIFF and its infrared TIFF without a scanner. |
@@ -306,13 +307,22 @@ table back after every pass.
 
 The fork adds beside it:
 
-- `frame::Options` fields `refocus_before_scan`, `overscan`,
+- `frame::Options` fields `refocus_before_scan`, `overscan`, `full_width`,
   `nikon_negative_meter` and `clean_quality`; `Scanned::windows` and
   `Scanned::metering`.
 - `framing::overscan_rect`: expands the full pass on a window-addressed unit,
   inside the address range; refused on a perforation-framed unit, whose 135
   frame is already the whole gate. Tests cover centering, range clamping, a
   full-width LS-8000 frame, and the refusal.
+- `framing::full_width_rect` (2026-11-04): widens the full pass across the
+  sensor, `ccd_pixels` rounded down to whole `line_gap` blocks (9996 on the
+  LS-8000/9000), centered on the frame and kept on the sensor. The adapter's
+  opening is 8964, so Nikon Scan never reads the rest. Jihoon Chung reported
+  that the LS-9000 reads 9996 with a 65 mm holder. `Window::check_geometry`
+  lets an X origin sit before the opening; `check_sensor` still holds the
+  window on the sensor. Refused on a perforation-framed unit. Tests:
+  `full_width_covers_the_sensor_in_whole_blocks`,
+  `a_window_may_reach_past_the_x_opening_but_not_the_sensor`.
 - An incomplete pass is `Error::IncompleteScan`; nothing is cleaned or
   published.
 - `focus::focus_in_table` (LS-8000 strip holders, `Framing::Thumbnail`): a
@@ -366,7 +376,7 @@ The fork adds these values:
 - `ScanResult.meter_nikon_exposures` (2026-10-31): Nikon Scan's exposures
   for the frame. See [LS-8000 own film base exposure](#ls-8000-own-film-base-exposure).
 - `Session.scan_frame(..., nikon_negative_meter=..., overscan=...,
-  clean_quality=...)`. `positive` and `frame_offset` are accepted and ignored
+  full_width=..., clean_quality=...)`. `positive` and `frame_offset` are accepted and ignored
   so older callers keep working.
 - `clean_rgb_ir(rgb, infrared, model, dpi, quality)` runs the same saved-scan
   dust processor as `nkscan clean`. It returns cleaned RGB pixels and the
@@ -447,6 +457,7 @@ upstream does not cover. The old branch is `main-pre-0.17`.
 | keep meter evidence and offer the Nikon negative meter | Reduced | Evidence ported onto upstream's loop. `--nikon-meter` now selects upstream's negative metering and the unit check; the meter record gains `analyzer_rect`. |
 | make an incomplete pass an error | Kept | |
 | overscan the full pass on window-addressed units | Kept | |
+| widen the full pass across the whole sensor | Kept | Fork only, 2026-11-04. |
 | autofocus an LS-8000 frame moved past its table entry | Kept | Upstream's `framing::register` covers perforation-framed units only. |
 | scan at known exposures with --exposure R G B | Kept | |
 | choose the focus point, lens position and refocus on the CLI | Kept | |

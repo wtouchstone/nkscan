@@ -50,6 +50,13 @@ units around the final negative scan. It does not expand the meter image or
 change the detected frame. Perforation-framed scanners already scan the full
 gate and reject a nonzero value.
 
+`scan_frame(full_width=True)` widens the final scan across the whole sensor,
+centered on the frame. On the LS-8000 and LS-9000 that is 9996 of the 10000
+pixels, the most whole 12-pixel blocks. The adapter's opening is 8964. A
+holder with a wider opening shows the film's edges in the extra width. It does
+not change the meter image or the detected frame. Perforation-framed scanners
+reject it.
+
 ## What the scanner can do
 
 `session.capabilities` reports what the attached unit offers, so a GUI can hide controls it does not have rather than failing once a scan is under way.

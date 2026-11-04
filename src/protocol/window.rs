@@ -448,7 +448,18 @@ impl Window {
             (x, 'X', self.origin.0, self.size.0),
             (y, 'Y', self.origin.1, self.size.1),
         ] {
-            if !axis.address_range.contains(&origin) {
+            // nkcolor: on X the range is the adapter's opening too. A window
+            // may start before it to read the film's edges, and
+            // `check_sensor` keeps it on the sensor
+            let before_opening =
+                name == 'X' && caps.address.ccd_pixels != 0 && origin < axis.address_range.start;
+            if before_opening {
+                debug!(
+                    origin,
+                    opening = axis.address_range.start,
+                    "window starts before the adapter's opening"
+                );
+            } else if !axis.address_range.contains(&origin) {
                 return Err(bad(
                     "window origin",
                     format!(
@@ -1036,6 +1047,52 @@ mod tests {
 
         // And an image resolution is not a thumbnail one
         w.resolution = (4000, 4000);
+        assert!(w.validate(&caps).is_err());
+    }
+
+    /// nkcolor: a window may start before the adapter's X opening to read the
+    /// film's edges, as long as it stays on the 10000 pixel sensor
+    #[test]
+    fn a_window_may_reach_past_the_x_opening_but_not_the_sensor() {
+        let mut p = vec![0u8; 91];
+        p[1] = Address::PAGE_CODE;
+        p[3] = 87;
+        p[16] = 0x42;
+        p[18..20].copy_from_slice(&4000u16.to_be_bytes());
+        p[20..22].copy_from_slice(&4000u16.to_be_bytes());
+        p[22..24].copy_from_slice(&666u16.to_be_bytes());
+        p[24..28].copy_from_slice(&9481u32.to_be_bytes()); // X address max
+        p[28..32].copy_from_slice(&518u32.to_be_bytes()); // X address min
+        p[36..40].copy_from_slice(&8964u32.to_be_bytes()); // X boundary
+        p[46..50].copy_from_slice(&34644u32.to_be_bytes()); // Y address max
+        p[50..54].copy_from_slice(&100u32.to_be_bytes()); // Y address min
+        p[58..62].copy_from_slice(&13176u32.to_be_bytes()); // Y boundary
+        p[70..72].copy_from_slice(&83u16.to_be_bytes());
+        p[72..74].copy_from_slice(&83u16.to_be_bytes());
+        p[83..85].copy_from_slice(&10000u16.to_be_bytes()); // CCD pixels
+        p[85] = 12;
+        p[86] = 3;
+        let caps = caps_from(p);
+
+        let mut w = Window::try_from(&[0u8; LENGTH][..]).unwrap();
+        w.id = 1;
+        w.composition = Composition::MultilevelBW;
+        w.bpp = 16;
+        w.scanning_mode = ScanMode::NORMAL_QUALITY;
+        w.color_interleaving = ColorInterleaving::LINE_WITHOUT_DISTANCE;
+        w.scanning_kind = ScanKind::THUMBNAIL;
+        w.resolution = (83, 83);
+
+        w.origin = (2, 1000);
+        w.size = (9996, 1000);
+        assert!(w.validate(&caps).is_ok());
+
+        w.size = (9999, 1000);
+        assert!(w.validate(&caps).is_err());
+
+        // Y is still held to its range
+        w.size = (9996, 1000);
+        w.origin = (2, 50);
         assert!(w.validate(&caps).is_err());
     }
 
