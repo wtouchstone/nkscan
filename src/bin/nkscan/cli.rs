@@ -238,6 +238,12 @@ pub struct Scan {
     #[arg(long, default_value_t = 0)]
     pub overscan: u32,
 
+    /// Widen the final pass across the whole sensor, centered on the frame.
+    /// A holder with a wider opening than the adapter's shows the film's edges.
+    /// Perforation-framed scanners already read the complete gate.
+    #[arg(long)]
+    pub full_width: bool,
+
     /// Reuse a frame rectangle found by an earlier thumbnail pass. Repeat for
     /// more frames. This skips frame discovery for this run.
     #[arg(
@@ -358,6 +364,21 @@ mod tests {
         };
         assert_eq!(scan.overscan, 157);
         assert!(Cli::try_parse_from(["nkscan", "scan", "--overscan", "-1"]).is_err());
+    }
+
+    #[test]
+    fn full_width_is_off_unless_asked() {
+        let Action::Scan(plain) = Cli::try_parse_from(["nkscan", "scan"]).unwrap().action else {
+            panic!("scan action");
+        };
+        assert!(!plain.full_width);
+        let Action::Scan(wide) = Cli::try_parse_from(["nkscan", "scan", "--full-width"])
+            .unwrap()
+            .action
+        else {
+            panic!("scan action");
+        };
+        assert!(wide.full_width);
     }
 
     #[test]
