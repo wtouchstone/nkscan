@@ -14,9 +14,11 @@ use crate::{
         usb::{UsbTransport, settle},
     },
 };
+use std::collections::HashMap;
 /// Only the two platforms with a SCSI node to open name one
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::{fmt, str::FromStr, time::Duration};
 use tracing::debug;
 
@@ -209,6 +211,24 @@ async fn closed(transport: Option<Box<dyn Transport>>) {
     }
 }
 
+/// True when `value` differs from the last value logged under `key`
+///
+/// nkcolor: the Web UI lists scanners every second or two. The list and a
+/// path that will not open are logged only when they change, so an idle
+/// server does not repeat the same lines (user report, 2026-11-06)
+fn changed(key: &'static str, value: String) -> bool {
+    static LAST: OnceLock<Mutex<HashMap<&'static str, String>>> = OnceLock::new();
+    let mut last = LAST
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if last.get(key) == Some(&value) {
+        return false;
+    }
+    last.insert(key, value);
+    true
+}
+
 /// The same as [`list`], keeping each transport open
 async fn probed() -> Vec<Probed> {
     let mut found: Vec<Probed> = Vec::new();
@@ -216,11 +236,10 @@ async fn probed() -> Vec<Probed> {
         found.push(usb_device(info).await);
     }
     found.extend(scsi_devices().await);
-    debug!(
-        count = found.len(),
-        devices = ?found.iter().map(|(d, _)| d.to_string()).collect::<Vec<_>>(),
-        "scanner list"
-    );
+    let devices = found.iter().map(|(d, _)| d.to_string()).collect::<Vec<_>>();
+    if changed("scanner list", format!("{devices:?}")) {
+        debug!(count = found.len(), ?devices, "scanner list");
+    }
     found
 }
 
@@ -344,7 +363,9 @@ async fn scsi_devices() -> Vec<Probed> {
             // missing device, one another handle holds, and a refused open
             // each look the same to a caller that only sees an empty list
             Err(e) => {
-                debug!(?path, %e, code = ?e.raw_os_error(), "could not open the scanner path");
+                if changed("scanner path", format!("{path:?} {:?}", e.raw_os_error())) {
+                    debug!(?path, %e, code = ?e.raw_os_error(), "could not open the scanner path");
+                }
                 break;
             }
         };
@@ -481,6 +502,15 @@ pub enum SelectError {
 mod tests {
     use super::*;
     use crate::protocol::caps::identity::SCANNER;
+
+    #[test]
+    fn a_repeated_value_is_logged_once() {
+        // nkcolor: the scanner list repeats every poll (2026-11-06)
+        assert!(changed("test key", "[]".into()));
+        assert!(!changed("test key", "[]".into()));
+        assert!(changed("test key", "[\"LS-50\"]".into()));
+        assert!(changed("test key", "[]".into()));
+    }
 
     fn usb(bus: &str, ports: &[u8], product: &str) -> Device {
         Device {

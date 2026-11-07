@@ -24,6 +24,7 @@ These changes are local to the nkcolor fork. NKCOLOR.md explains each one.
 ### Changed
 
 - `--clean` and `--ir` are exclusive.
+- The scanner list and a scanner path that will not open are logged only when they change.
 - A scan pass that ends before its frame is complete is an error, and no image is written.
 
 ### Fixed
