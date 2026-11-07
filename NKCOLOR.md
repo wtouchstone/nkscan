@@ -1,7 +1,7 @@
 # nkcolor fork changes
 
 This file describes every local change from upstream nkscan. Branch `main`
-holds 31 commits on top of upstream `v0.17.0` (`0857681`). Each commit subject
+holds 36 commits on top of upstream `v0.17.0` (`0857681`). Each commit subject
 starts with "nkcolor:".
 
 The 2026-10-27 sync to 0.17.0 is in [Upstream reconciliation](#upstream-reconciliation).
@@ -54,7 +54,7 @@ Files: `src/bin/nkscan/cli.rs`, `src/bin/nkscan/scan.rs`,
 | Ignore false LS-8000 AE bits | `autoexpose::unit_autoexposure_kind` | The LS-8000 reports reserved D1h bits as AE and AE-with-white-balance support. Nikon Scan uses ordinary image passes. The fork forces host metering so it keeps the meter pixels. |
 | Reject incomplete frame output | `Error::IncompleteScan`; scan command exit failure | Do not turn a short scanner pass into a full-size TIFF with empty or repeated data. |
 | Treat FH-835M and FH-835S as 135 | `FilmFormat::from_holder(0x14 \| 0x15)` | The LS-9000 interface document lists both as 35 mm holders. Upstream offers them the 120 choices. |
-| Log the SET WINDOW records, focus mode and open failures | `NKSCAN_SET_WINDOW` lines; focus-mode lines; `device::probe` debug lines | Compare a run with a Nikon Scan capture without a USB trace. Show which focus a pass used. Say why a scanner path did not open. |
+| Log the SET WINDOW records, focus mode and open failures | `NKSCAN_SET_WINDOW` lines; focus-mode lines; `device::probe` debug lines | Compare a run with a Nikon Scan capture without a USB trace. Show which focus a pass used. Say why a scanner path did not open. The scanner list and an unopened path are logged only when they change (`device::changed`): the Web UI lists scanners every second or two, and an idle server repeated both lines (user report, 2026-11-06). Test: `device::tests::a_repeated_value_is_logged_once`. |
 
 ### Meter record
 
