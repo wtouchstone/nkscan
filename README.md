@@ -13,7 +13,8 @@ detail for each change.
 `nikon_negative_meter=True`)
 Upstream meters the way Nikon Scan does. This option meters as a color negative
 and refuses a scanner that no Nikon Scan capture checks: it runs only on the
-LS-50, LS-5000 and LS-8000. On those three the final exposure matches Nikon
+LS-50, LS-5000 and LS-8000. With `--film mono` on the LS-50 and LS-5000 it
+meters with Nikon's black and white curves and keeps the three color channels. On those three the final exposure matches Nikon
 Scan's to the count. Nikon's color conversion depends on the exposure it chose,
 so we have to choose the same one to get the same result.
 

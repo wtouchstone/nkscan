@@ -49,9 +49,11 @@ pub struct Options<'a> {
     /// nkcolor: widen the full pass across the whole sensor, centered on the
     /// frame ([`framing::full_width_rect`]). Focus and metering use `frame`
     pub full_width: bool,
-    /// nkcolor: meter as a color negative with the rule a Nikon Scan capture
-    /// verifies on this unit, whatever `metering.film` says. Refused on a unit
-    /// [`meter::nikon_negative_supported`] does not name
+    /// nkcolor: meter as a negative with Nikon Scan's rule for this unit. A
+    /// black and white negative (`metering.film`) keeps Nikon's black and
+    /// white curve set; every other film is metered as a color negative.
+    /// Refused on a unit [`meter::nikon_negative_supported`] (color) or
+    /// [`meter::nikon_monochrome_supported`] (black and white) does not name
     pub nikon_negative_meter: bool,
     /// nkcolor: normal or fine dust reconstruction
     pub clean_quality: dust::Quality,
@@ -103,16 +105,29 @@ pub async fn scan_frame_with(
     let mut metering = options.metering;
     if options.nikon_negative_meter {
         let caps = session.capabilities();
-        if !meter::nikon_negative_supported(caps.identity.model()) {
+        let monochrome = metering.film == crate::scan::profile::Film::MonochromeNegative;
+        let supported = if monochrome {
+            meter::nikon_monochrome_supported(caps.identity.model())
+        } else {
+            meter::nikon_negative_supported(caps.identity.model())
+        };
+        if !supported {
             return Err(Error::Unsupported {
                 op: "Nikon negative metering",
                 reason: format!(
-                    "no Nikon Scan capture verifies the negative meter on {}",
+                    "no Nikon Scan port covers the {} meter on {}",
+                    if monochrome {
+                        "black and white negative"
+                    } else {
+                        "negative"
+                    },
                     caps.identity.product
                 ),
             });
         }
-        metering.film = crate::scan::profile::Film::Negative;
+        if !monochrome {
+            metering.film = crate::scan::profile::Film::Negative;
+        }
         metering.lock_white_balance = false;
     }
     let mut scan_rect = framing::overscan_rect(session.capabilities(), frame, options.overscan)?;

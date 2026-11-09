@@ -159,9 +159,12 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
     if film == Film::MonochromeNegative && (ir || clean) {
         bail!("--ir and --clean do not work on black and white negatives");
     }
-    if nikon_meter && film != Film::Negative {
-        bail!("--nikon-meter only works with --film negative");
+    if nikon_meter && !matches!(film, Film::Negative | Film::MonochromeNegative) {
+        bail!("--nikon-meter only works with --film negative or --film mono");
     }
+    // nkcolor: Nikon's black and white path inverts all three channels, so a
+    // Nikon-metered black and white scan keeps them rather than one gray
+    let gray = film == Film::MonochromeNegative && !nikon_meter;
     if overscan > 0 && film != Film::Negative {
         bail!("--overscan only works with --film negative");
     }
@@ -530,7 +533,7 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
                     &scanned.windows,
                     &setup_before,
                     &setup_after,
-                    nikon_meter,
+                    nikon_meter.then_some(film),
                 )?;
                 info!(
                     frame = n + 1,
@@ -559,15 +562,7 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
                 info!(frame = n + 1, "cleaned {removed} pixels");
             }
 
-            let written = io::write_frame(
-                &basename,
-                first + n,
-                &samples,
-                &pass,
-                icc,
-                film == Film::MonochromeNegative,
-                ir,
-            )?;
+            let written = io::write_frame(&basename, first + n, &samples, &pass, icc, gray, ir)?;
             let origin_x = scanned.windows.first().map_or(0, |w| w.origin.0);
             let have_curves = session.curves().is_some();
             let ccd = io::write_ccd_record(&basename, first + n, &pass, origin_x, have_curves)?;
@@ -613,7 +608,7 @@ async fn run_cancellable(session: &mut Session, args: cli::Scan) -> anyhow::Resu
                     &samples,
                     &pair_pass,
                     icc,
-                    film == Film::MonochromeNegative,
+                    gray,
                     false,
                 )?;
                 let pair_origin = pair_windows.first().map_or(0, |w| w.origin.0);
