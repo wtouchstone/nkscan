@@ -950,8 +950,10 @@ impl PySession {
     /// `Discovery.base_density`. `lock_white_balance` defaults to
     /// `Capabilities.locks_white_balance(film)`. `clean` uses infrared
     /// internally and cannot be combined with retained `infrared` output.
-    /// nkcolor: `nikon_negative_meter` meters as a color negative with the rule
-    /// a Nikon Scan capture verifies on this unit, and refuses other units.
+    /// nkcolor: `nikon_negative_meter` meters with Nikon Scan's negative rule
+    /// for this unit, and refuses other units. `film="mono"` keeps Nikon's
+    /// black and white curve set (LS-50 and LS-5000 only); every other film is
+    /// metered as a color negative.
     /// Every host meter image comes back in `meter_passes`. `positive` and
     /// `frame_offset` are accepted and ignored: the rectangle given is the
     /// rectangle scanned

@@ -18,6 +18,7 @@ use nkscan::{
     scan::{
         autoexpose::{Exposures, MeteringEvidence},
         pass::{Pass, corrects_rows},
+        profile::Film,
     },
 };
 use std::{
@@ -198,15 +199,15 @@ pub fn write_meter_evidence(
     full_windows: &[Window],
     setup_before: &[(Channel, Vec<u8>)],
     setup_after: &[(Channel, Vec<u8>)],
-    nikon_negative: bool,
+    nikon_film: Option<Film>,
 ) -> Result<Vec<PathBuf>> {
     let meter_basename = PathBuf::from(format!("{}_{}_meter", basename.display(), frame));
     let mut written = Vec::new();
     let mut record = String::from("format=nkscan-meter-v2\n");
-    record.push_str(if nikon_negative {
-        "method=nikon-negative\n"
-    } else {
-        "method=generic\n"
+    record.push_str(match nikon_film {
+        Some(Film::MonochromeNegative) => "method=nikon-monochrome-negative\n",
+        Some(_) => "method=nikon-negative\n",
+        None => "method=generic\n",
     });
 
     if let Some(startup) = &evidence.startup_exposures {
@@ -642,7 +643,7 @@ mod tests {
             &[],
             &[],
             &[],
-            true,
+            Some(Film::Negative),
         )
         .expect("the evidence");
         let record = written
@@ -668,6 +669,69 @@ mod tests {
         );
         // No Nikon exposures in the evidence, so no line for them
         assert!(!text.contains("nikon_final="), "{text}");
+    }
+
+    /// nkcolor: the method line names the rule that set the exposures, and
+    /// tells a Nikon black and white negative from a color one
+    #[test]
+    fn a_meter_record_names_the_film_nikons_meter_used() {
+        use nkscan::scan::autoexpose::{MeterPass, MeteringEvidence};
+        let (rows, cols) = (3usize, 4usize);
+        let mut exposures = Exposures::default();
+        for channel in [Channel::Red, Channel::Green, Channel::Blue] {
+            exposures.set(channel, 10);
+        }
+        let evidence = MeteringEvidence {
+            startup_exposures: Some(exposures.clone()),
+            passes: vec![MeterPass {
+                samples: Samples {
+                    colors: vec![vec![1000u16; rows * cols]; 3],
+                    ir: None,
+                },
+                windows: Vec::new(),
+                pass: Pass {
+                    layout: Layout::single_line(rows as u32, cols as u32, vec![1, 2, 3]),
+                    cooperation: Vec::new(),
+                    complete: true,
+                    blocks: cols,
+                    rows,
+                    cols,
+                },
+                exposures: exposures.clone(),
+                analyzer_rect: [1, 0, 2, 3],
+            }],
+            nikon_exposures: None,
+        };
+        for (film, method) in [
+            (Some(Film::Negative), "method=nikon-negative"),
+            (
+                Some(Film::MonochromeNegative),
+                "method=nikon-monochrome-negative",
+            ),
+            (None, "method=generic"),
+        ] {
+            let dir =
+                std::env::temp_dir().join(format!("nkscan-method-{}-{method}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("a directory to write into");
+            let written = write_meter_evidence(
+                &dir.join("scan"),
+                1,
+                &evidence,
+                &exposures,
+                &[],
+                &[],
+                &[],
+                film,
+            )
+            .expect("the evidence");
+            let record = written
+                .iter()
+                .find(|p| p.extension().is_some_and(|e| e == "txt"))
+                .expect("a meter record");
+            let text = std::fs::read_to_string(record).expect("the record");
+            std::fs::remove_dir_all(&dir).ok();
+            assert_eq!(text.lines().nth(1), Some(method), "{text}");
+        }
     }
 
     /// nkcolor: the meter record keeps Nikon Scan's exposures beside the ones
@@ -697,7 +761,7 @@ mod tests {
             &[],
             &[],
             &[],
-            true,
+            Some(Film::Negative),
         )
         .expect("the evidence");
         let record = written

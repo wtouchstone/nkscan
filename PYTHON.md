@@ -144,7 +144,8 @@ icc = session.nikon_profile("negative")
 nkcolor: pass `nikon_negative_meter=True` to meter as a color negative with the
 rule a Nikon Scan capture verifies on this scanner. Only the LS-50, LS-5000 and
 LS-8000 accept it; other scanners raise `UnsupportedError`. It overrides `film`
-and `lock_white_balance` for metering. On the LS-8000, negatives are metered with
+and `lock_white_balance` for metering, except that `film="mono"` keeps Nikon's
+black and white curve set (LS-50 and LS-5000 only). On the LS-8000, negatives are metered with
 the LS-8000 film curve.
 
 The result keeps the meter images. `result.meter_passes` contains one item for

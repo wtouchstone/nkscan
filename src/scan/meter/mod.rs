@@ -357,6 +357,17 @@ pub fn nikon_negative_supported(model: Option<Model>) -> bool {
     matches!(model, Some(Model::Ls50 | Model::Ls5000 | Model::Ls8000))
 }
 
+/// nkcolor: whether Nikon Scan's black and white negative meter is ported for `model`
+///
+/// The LS-50 and LS-5000 share LS5000.md3, whose black and white curve set
+/// (`0x100ce978`) and pass factors (`0x100ced78`) [`negative`] uses for
+/// [`Film::MonochromeNegative`]. The rule is the color negative rule with
+/// those tables. No Nikon builder record of a black and white scan checks it
+/// yet. The LS-8000 module has its own analyzer, so it is not covered.
+pub fn nikon_monochrome_supported(model: Option<Model>) -> bool {
+    matches!(model, Some(Model::Ls50 | Model::Ls5000))
+}
+
 /// The 35mm crop of Nikon Scan in prescan pixels, from the adapter, the holder and the film.
 /// `Some(None)` is the full prescan. `None` is an adapter that is not known (LS5000.md3
 /// `1003c1f0`, LS4000.md3 `10034bd0`)
@@ -793,6 +804,16 @@ mod tests {
         assert!(nikon_negative_supported(Some(Model::Ls8000)));
         assert!(!nikon_negative_supported(Some(Model::Ls9000)));
         assert!(!nikon_negative_supported(None));
+    }
+
+    /// nkcolor: the black and white meter is ported from LS5000.md3 only
+    #[test]
+    fn the_nikon_monochrome_meter_covers_the_ls5000_module_only() {
+        assert!(nikon_monochrome_supported(Some(Model::Ls50)));
+        assert!(nikon_monochrome_supported(Some(Model::Ls5000)));
+        assert!(!nikon_monochrome_supported(Some(Model::Ls8000)));
+        assert!(!nikon_monochrome_supported(Some(Model::Ls9000)));
+        assert!(!nikon_monochrome_supported(None));
     }
 
     /// nkcolor: the LS-5000 builder record of 2026-09-02 gets Nikon Scan's three exposures

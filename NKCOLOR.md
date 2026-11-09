@@ -30,7 +30,7 @@ Files: `src/bin/nkscan/cli.rs`, `src/bin/nkscan/scan.rs`,
 | Change | Interface | Reason |
 | --- | --- | --- |
 | Save meter evidence | `scan --meter` | Keep each meter image, its exposure, the rectangle metering measured in it, the selected scan exposure, each SET WINDOW record, and the scanner setup records. |
-| Use the verified Nikon negative meter | `scan --nikon-meter` (requires `--meter` and `--film negative`) | Meter as a color negative with upstream's Nikon Scan port, and refuse a scanner that no Nikon builder record verifies. Write `method=nikon-negative` in the meter record. |
+| Use the verified Nikon negative meter | `scan --nikon-meter` (requires `--meter` and `--film negative` or `--film mono`) | Meter as a color negative with upstream's Nikon Scan port, and refuse a scanner that no Nikon builder record verifies. Write `method=nikon-negative` in the meter record. With `--film mono` (LS-50 and LS-5000 only, 2026-11-09), meter with Nikon's black and white curve set, keep the three color channels in the scan TIFF instead of one gray, and write `method=nikon-monochrome-negative`. nkcolor inverts the three channels as Nikon Scan does for film type B&W. |
 | Use known exposures | `scan --exposure RED GREEN BLUE` | Repeat a measured acquisition without another meter pass. |
 | Scan at Nikon's LS-8000 exposures | `scan --nikon-exposures` (conflicts with `--exposure`) | Turn off [own film base exposure](#ls-8000-own-film-base-exposure) and scan an LS-8000 color negative at Nikon Scan's exposures. |
 | Select focus | `scan --focus X Y` and `scan --focus-position POSITION` | Use a point inside the frame or a known absolute lens position. |
@@ -62,7 +62,8 @@ The meter record is `<basename>_<n>_meter.txt`, `format=nkscan-meter-v2`. The
 lines are, in order:
 
 - `format=nkscan-meter-v2`
-- `method=nikon-negative` (with `--nikon-meter`) or `method=generic`
+- `method=nikon-negative` (with `--nikon-meter`), `method=nikon-monochrome-negative`
+  (with `--nikon-meter --film mono`), or `method=generic`
 - `startup=red:R,green:G,blue:B`: the start-up exposures that seeded the meter
 - for each pass: `pass=N dpi= rows= cols= bits= channels=[...] complete= exposures=red:R,green:G,blue:B`
 - for each pass, new in this sync: `analyzer_rect=N LINE0,PIXEL0,LINE1,PIXEL1`
@@ -199,6 +200,18 @@ verifies: LS-50, LS-5000 and LS-8000. `frame::Options::nikon_negative_meter`
 other unit. It meters as a color negative whatever `--film` or `film=` says, and
 per channel (white balance unlocked), as Nikon Scan meters a negative.
 
+Black and white negatives (2026-11-09). With `--film mono` or `film="mono"`,
+`nikon_negative_meter` keeps `Film::MonochromeNegative`: upstream's
+`negative::exposures` with `MONOCHROME_NEGATIVE` (LS5000.md3 `0x100ce978`) and
+the black and white pass factors (`0x100ced78`), per channel. Nikon Scan uses
+the same analyzer for film types `0x20` and `0x21`; only the curve set and the
+pass factors change (`diagnostics/nikon-bw-film-type/FINDINGS.md` in the
+nkcolor workspace). `meter::nikon_monochrome_supported` allows the LS-50 and
+LS-5000 only. No Nikon builder record of a black and white scan checks the
+result yet. The command line then writes the scan as three color channels
+(`write_frame` with `mono` false), because Nikon's black and white path inverts
+all three. Without `--nikon-meter`, `--film mono` still writes one gray plane.
+
 The measured rectangle (the crop) is upstream's: from the adapter, the holder
 and the film on a 35 mm unit, and from the format on the LS-8000 and LS-9000.
 The fork used to scale its captured rectangle to the meter image size. The
@@ -218,6 +231,9 @@ Tests (`src/scan/meter/mod.rs`):
 - `a_low_first_ls8000_pass_is_metered_again`: an underexposed first pass is
   metered again before the analyzer.
 - `the_nikon_negative_meter_is_verified_per_unit`.
+- `the_nikon_monochrome_meter_covers_the_ls5000_module_only`.
+
+Test (`src/bin/nkscan/io.rs`): `a_meter_record_names_the_film_nikons_meter_used`.
 
 ## LS-8000 own film base exposure
 
