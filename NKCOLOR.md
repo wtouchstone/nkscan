@@ -1,10 +1,12 @@
 # nkcolor fork changes
 
 This file describes every local change from upstream nkscan. Branch `main`
-holds 36 commits on top of upstream `v0.17.0` (`0857681`). Each commit subject
-starts with "nkcolor:".
+holds 39 commits on top of upstream `v0.19.0` (upstream `main` at `f971cfd`,
+which adds one build change after the `v0.19.0` tag). Each commit subject
+starts with "nkcolor:", except one note on the LS-8000 CCD row curves.
 
-The 2026-10-27 sync to 0.17.0 is in [Upstream reconciliation](#upstream-reconciliation).
+The 2026-11-11 sync to 0.19.0 and the 2026-10-27 sync to 0.17.0 are in
+[Upstream reconciliation](#upstream-reconciliation).
 The 2026-10-09 rebase onto `942121c` is in
 [docs/UPSTREAM_AUDIT_2026-10-09.md](docs/UPSTREAM_AUDIT_2026-10-09.md). Frame
 placement follows upstream from that date: `scan_frame` scans the rectangle it
@@ -379,7 +381,7 @@ The fork adds these values:
 - `Capabilities.calibrate` and `Session.calibrate_shading()` (stages the film
   again afterwards).
 - `Discovery.thumbnail_bounds`: the scanner-address rectangle of the thumbnail
-  window.
+  window. A `Discovery` from `resume_frames` has it too (2026-11-11).
 - `Discovery.thumbnail_frames`: on perforation-framed units, each frame's first
   and last thumbnail column and its feed extent. It is now read off upstream's
   `Discovery.column_addresses`: each end is the column whose address is
@@ -408,12 +410,15 @@ The fork used to install its own subscriber at import, which would have made
 upstream's `init_logging` do nothing. The Windows nkcolor launcher captures
 stderr in its stable server log.
 
-Upstream 0.13 to 0.17 added Python values the fork does not change:
+Upstream 0.13 to 0.19 added Python values the fork does not change:
 `discover_frames(film=)`, `scan_frame(film=, format=, base_density=)`,
 `meter_frame(film=, format=, base_density=)`, `Discovery.base_density`,
 `Discovery.column_addresses`, `Discovery.row_addresses`,
-`Capabilities.film_format` and `Capabilities.film_formats`.
+`Capabilities.film_format` and `Capabilities.film_formats`; and in 0.19,
+`Discovery.cache`, `Session.resume_frames` and `Session.medium_changes`.
 `lock_white_balance` now defaults to the value for the film instead of `True`.
+Since 0.18, `Capabilities.max_samples` is 16 on an LS-50, and a `scan_frame`
+with `samples` above 1 gives 16-bit averages.
 
 ## Changes callers must follow
 
@@ -445,8 +450,66 @@ behavior or offer something better:
   caller that rebuilds Nikon's image must read Nikon's exposures from
   `nikon_final=` or `ScanResult.meter_nikon_exposures` and rescale the pixels
   (nkcolor does this in `nkcolor.capture.to_nikon_exposures`).
+- Since 0.19, `nkscan scan` without `--frame-rect-for` keeps the frames it
+  found in a cache file until eject, and a later run on the same film uses
+  them. It trusts them while the unit reports no medium change (`28h-00h`).
+  The unit reports a change one time, to the next command, so another
+  process (the Web UI's Python media polls) can consume the report. The Web
+  UI therefore passes `--rediscover` when nkscan finds the frames itself
+  (`nkcolor-webui/src/nkcolor_webui/scanner.py`, `build_scan_command`). A run
+  with `--frame-rect-for` reads and writes no cache.
+- Since 0.18, the LS-50 multi-samples (`--samples` 2 to 16, `scan_frame(samples=)`),
+  with or without infrared. It reads infrared on every reading, and every
+  channel is averaged. An average of more than one reading is a 16-bit sample
+  (`Layout::sample_bits`), and the TIFF writer and `scan_frame` scale from
+  that depth. Every scan TIFF stays 16-bit full scale. Metering passes read
+  each line once, so the meter record's `bits=` keeps the unit's depth.
 
 ## Upstream reconciliation
+
+### 2026-11-11: sync to 0.19.0
+
+Upstream moved from `v0.17.0` (`0857681`) to `v0.19.0` and one build change
+(`f971cfd`), 14 commits. 0.18 adds LS-50 multi-sampling, a firmware `Quirks`
+table, and 16-bit averages. 0.19 adds the discovery cache and resume,
+`Session::medium_changes`, PyO3 and numpy 0.30, and Rust 1.99
+(`rust-toolchain.toml`). The fork's 38 commits were rebased onto
+`f971cfd`, one commit per fork change, with the same subjects. No commit was
+dropped. The old branch is `main-pre-0.19`.
+
+| Fork commit | Status | Reason |
+| --- | --- | --- |
+| clean dust with a verified profile per model and a quality | Kept | Stub conflict only (`resume_frames` beside `clean_quality`). |
+| ignore the reserved AE bits the LS-8000 reports | Kept | Import conflict only. |
+| add Nikon Scan's color-negative meter to the library | Kept | Rust 1.99's Clippy asks for `as_chunks` in `ls8000::curve`. |
+| keep meter evidence and offer the Nikon negative meter | Kept | `scan_frame_with` scales by `Layout::sample_bits`, as upstream now does. |
+| make an incomplete pass an error | Kept | Same scaling. |
+| reuse saved frame rectangles and move frames on the CLI | Kept | Upstream's cache-aware discovery now sits in the branch without `--frame-rect-for`, so a reused rectangle reads and writes no cache. |
+| clean a saved scan and its infrared file without a scanner | Kept | Clippy: `as_chunks` in `deinterleave3`. |
+| capture a normal and Super Fine pair with --superfine-pair | Kept | The pair now scales by `Layout::sample_bits`. Before, a pair taken with `--samples` above 1 was stretched from the unit's depth, not from its 16-bit average. |
+| add Nikon Scan's Calibrate as an on-demand command | Kept | Module list conflict only. |
+| add Python exposure range, boundaries and thumbnail frames | Kept | Upstream builds `Discovery` in `PyDiscovery::new`. The fork's two values come from `DiscoveryExtras::of`, which reads the capabilities while the session is held, for `discover_frames` and `resume_frames` alike. |
+| keep the fork's older Python calls working | Kept | Stub conflict only. |
+| document the fork changes | Kept | CHANGELOG and PYTHON.md keep both the fork's and upstream's text. |
+| describe the fork in the README | Kept | The fork's README replaces upstream's, so upstream's `--rediscover` help and contribution paragraph are not in it. |
+| Nikon black and white negative meter on the LS-50 and LS-5000 | Kept | The stub is regenerated; it still had the older `nikon_negative_meter` text. |
+| all others | Kept | Applied without a conflict. |
+
+Verification on 2026-11-11, macOS, Rust 1.99.1, no scanner:
+
+- `cargo test -j 2 --all-features`: 226 library tests and 25 command-line
+  tests pass; 3 hardware tests ignored; 1 doctest passes. `cargo test -j 2`
+  without features also passes.
+- `cargo clippy --all-targets --all-features` and `cargo fmt --check`: clean.
+- `cargo check --target x86_64-pc-windows-msvc --features cli`: clean.
+- Each of the 38 rebased commits passes `cargo check --all-features --tests`
+  and `cargo fmt --check`.
+- `cargo run --features python --bin stub_gen` leaves `nkscan.pyi` unchanged.
+
+Hardware still to check on the Windows LS-50: a multi-sampled scan (for
+example `--samples 4`) with `--nikon-meter --meter`, with `--ir`, and with
+`--clean`, through `--frame-rect-for`; the time it takes; and that the CCD
+record and the meter record read as before.
 
 ### 2026-10-27: sync to 0.17.0
 

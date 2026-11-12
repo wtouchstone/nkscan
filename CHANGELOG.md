@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## nkcolor fork (on 0.17.0)
+## nkcolor fork (on 0.19.0)
 
 These changes are local to the nkcolor fork. NKCOLOR.md explains each one.
 
@@ -33,6 +33,7 @@ These changes are local to the nkcolor fork. NKCOLOR.md explains each one.
 - An LS-4x/LS-5x strip adapter that reports a zero Y maximum before its first thumbnail gets the documented transport span.
 - The FH-835M and FH-835S holders are 135.
 - The LS-8000 uses host metering despite its reserved AE bits, and cleans with the medium-format dust profile. An unrecognized scanner is refused for cleaning.
+- A `--superfine-pair` scan with more than one reading a line is scaled from its 16-bit average (0.19 sync).
 
 ## [0.19.0]
 
