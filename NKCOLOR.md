@@ -1,7 +1,7 @@
 # nkcolor fork changes
 
 This file describes every local change from upstream nkscan. Branch `main`
-holds 39 commits on top of upstream `v0.19.0` (upstream `main` at `f971cfd`,
+holds 40 commits on top of upstream `v0.19.0` (upstream `main` at `f971cfd`,
 which adds one build change after the `v0.19.0` tag). Each commit subject
 starts with "nkcolor:", except one note on the LS-8000 CCD row curves.
 
@@ -295,6 +295,19 @@ Tests:
 Hardware still to check on Windows: the LS-8000 accepts the longer blue
 exposure (2.45 times Nikon's on the builder record) and the scan time it
 gives; the raw film base reads near neutral.
+
+## LS-8000 infrared on every reading
+
+File: `src/protocol/model.rs`.
+
+The LS-8000 gets the `INFRARED_EVERY_READING` quirk, as the LS-50 has.
+With infrared and Samples 2 in the three-line mode, the unit sends red,
+green, blue and infrared for each reading: 8 samples a feed position. Read
+as one infrared reading (7 samples), each channel moved one slot every
+position, and nkscan stopped after 7/8 of the data. Found on a real pass,
+2026-11-11 (nkcolor workspace, `diagnostics/ls8000-multisample/FINDINGS.md`).
+Not yet checked on hardware with the fix. The padding the unit adds to each
+reading in this mode is not known. To report upstream once a scan confirms it.
 
 ## Meter evidence
 

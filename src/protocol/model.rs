@@ -85,6 +85,7 @@ impl Model {
     pub fn quirks(self) -> Quirks {
         match self {
             Self::Ls50 => Quirks::UNADVERTISED_MULTI_READING | Quirks::INFRARED_EVERY_READING,
+            Self::Ls8000 => Quirks::INFRARED_EVERY_READING,
             _ => Quirks::empty(),
         }
     }
@@ -99,7 +100,9 @@ bitflags::bitflags! {
         const UNADVERTISED_MULTI_READING = 1 << 0;
         /// With more than one reading a line, the unit reads infrared again on
         /// every reading, so each reading is R, G, B, IR. Other units read
-        /// infrared one time, with the first reading. LS-50
+        /// infrared one time, with the first reading. LS-50, and the LS-8000
+        /// in its three-line mode: a 2-reading pass there read as one infrared
+        /// reading put each channel one slot off per feed position
         const INFRARED_EVERY_READING = 1 << 1;
     }
 }
@@ -116,6 +119,14 @@ mod tests {
         assert_eq!(Model::from_product("LS-5000 ED"), Some(Model::Ls5000));
         assert_eq!(Model::from_product("LS-50 ED"), Some(Model::Ls50));
         assert_eq!(Model::from_product("LS-2000"), None);
+    }
+
+    /// The LS-8000 reads infrared with every reading. The LS-5000 does not
+    #[test]
+    fn the_ls8000_reads_infrared_every_reading() {
+        assert!(Model::Ls8000.quirks().contains(Quirks::INFRARED_EVERY_READING));
+        assert!(!Model::Ls8000.quirks().contains(Quirks::UNADVERTISED_MULTI_READING));
+        assert!(!Model::Ls5000.quirks().contains(Quirks::INFRARED_EVERY_READING));
     }
 
     /// What a USB enumeration filters on, before anything is opened

@@ -931,6 +931,53 @@ mod transposed {
         }
     }
 
+    /// The LS-8000 reads infrared again with the colors in the three-line
+    /// mode too. Each reading of a feed position is R, G, B, IR, so infrared
+    /// averages like a color, and every block of `gap` positions keeps its
+    /// channels in place
+    #[test]
+    fn multi_line_averages_infrared_read_every_time() {
+        let (rows, stages, gap) = (2usize, 4usize, 2u32);
+        let l = Layout {
+            infrared_per_reading: true,
+            ..layout(rows as u32, stages as u32, gap, vec![1, 2, 3, 9], 2)
+        };
+        // 4 channels x 2 readings
+        assert_eq!(l.readouts(), 8);
+        let (mut d, mut samples) = buffers(&l);
+        d.push(&stream(stages, 8, rows, 3), &mut samples).unwrap();
+        assert!(d.complete());
+
+        let (_, cols) = d.shape();
+        let gap = gap as usize;
+        let ir = samples.ir.as_ref().unwrap();
+        let average = |stage: usize, slot: usize, pixel: usize, line: usize| {
+            (u32::from(tag(stage, slot, pixel, line)) + u32::from(tag(stage, slot + 4, pixel, line)))
+                .div_ceil(2) as u16
+        };
+        for stage in 0..stages {
+            let (block, position) = (stage / gap, stage % gap);
+            for line in 0..3 {
+                let x = block * gap * 3 + line * gap + position;
+                for pixel in 0..rows {
+                    let pixel_at = (rows - 1 - pixel) * cols + x;
+                    assert_eq!(
+                        ir[pixel_at],
+                        average(stage, 3, pixel, line),
+                        "stage {stage} line {line} pixel {pixel} IR"
+                    );
+                    for c in 0..3 {
+                        assert_eq!(
+                            samples.colors[c][pixel_at],
+                            average(stage, c, pixel, line),
+                            "stage {stage} line {line} pixel {pixel} color {c}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// A gap of zero gives the decoder no rows to separate
     #[test]
     fn a_gap_of_zero_is_refused() {

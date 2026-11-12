@@ -926,6 +926,34 @@ mod tests {
         assert_eq!(l.readouts(), 8);
     }
 
+    /// The LS-8000 reads infrared on every reading in its three-line mode too
+    ///
+    /// The pass from nkcolor's hardware report (2026-11-11): 8964 x 6696 at
+    /// 4000 dpi, 14 bit, 2 readings and infrared. Read as one infrared reading
+    /// it came back as 14 bytes a pixel, with each channel one slot further off
+    /// every feed position
+    #[test]
+    fn an_ls8000_reads_infrared_on_every_reading_in_three_line_mode() {
+        let mut windows = rgb(4000, (8964, 6696));
+        windows.push(window(9, 4000, (8964, 6696)));
+        for w in &mut windows {
+            w.bpp = 14;
+            w.multiple_reading = 1;
+            w.composition = Composition::MultilevelRGB;
+            w.color_interleaving = ColorInterleaving::MULTILINE_SIMULTANEOUS;
+        }
+        let mut ls8000 = caps(0x03, 12, 3);
+        ls8000.identity.product = "LS-8000 ED".into();
+
+        let l = Layout::new(&ls8000, &windows, 4000, None).unwrap();
+
+        assert!(l.infrared_per_reading);
+        assert!(l.even_readings());
+        assert_eq!(l.readouts(), 8);
+        // 4 channels x 2 readings x 2 bytes a pixel
+        assert_eq!(l.total_bytes(), 8964 * 6696 * 16);
+    }
+
     /// Issue 52: the same unit on `--samples 4 --ir`, where the CCD's two rows
     /// come packed into one line
     ///
