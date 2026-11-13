@@ -124,9 +124,21 @@ mod tests {
     /// The LS-8000 reads infrared with every reading. The LS-5000 does not
     #[test]
     fn the_ls8000_reads_infrared_every_reading() {
-        assert!(Model::Ls8000.quirks().contains(Quirks::INFRARED_EVERY_READING));
-        assert!(!Model::Ls8000.quirks().contains(Quirks::UNADVERTISED_MULTI_READING));
-        assert!(!Model::Ls5000.quirks().contains(Quirks::INFRARED_EVERY_READING));
+        assert!(
+            Model::Ls8000
+                .quirks()
+                .contains(Quirks::INFRARED_EVERY_READING)
+        );
+        assert!(
+            !Model::Ls8000
+                .quirks()
+                .contains(Quirks::UNADVERTISED_MULTI_READING)
+        );
+        assert!(
+            !Model::Ls5000
+                .quirks()
+                .contains(Quirks::INFRARED_EVERY_READING)
+        );
     }
 
     /// What a USB enumeration filters on, before anything is opened

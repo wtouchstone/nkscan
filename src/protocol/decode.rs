@@ -952,8 +952,9 @@ mod transposed {
         let gap = gap as usize;
         let ir = samples.ir.as_ref().unwrap();
         let average = |stage: usize, slot: usize, pixel: usize, line: usize| {
-            (u32::from(tag(stage, slot, pixel, line)) + u32::from(tag(stage, slot + 4, pixel, line)))
-                .div_ceil(2) as u16
+            (u32::from(tag(stage, slot, pixel, line))
+                + u32::from(tag(stage, slot + 4, pixel, line)))
+            .div_ceil(2) as u16
         };
         for stage in 0..stages {
             let (block, position) = (stage / gap, stage % gap);
