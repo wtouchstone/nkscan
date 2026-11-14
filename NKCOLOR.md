@@ -197,7 +197,15 @@ an LS-8000, and `negative::exposures` everywhere else. This applies to every
 LS-8000 color-negative metering, with or without `--nikon-meter`.
 
 `meter::nikon_negative_supported` names the units a Nikon builder record
-verifies: LS-50, LS-5000 and LS-8000. `frame::Options::nikon_negative_meter`
+verifies: LS-50, LS-5000 and LS-8000. Since 2026-11-13 it also names the
+LS-9000, LS-4000 and LS-40: LS9000.md3 is the LS5000.md3 code with the same
+data, and LS4000.md3 is the LS8000.md3 code with the same data. Under
+emulation each module gives the captured record's exposures (nkcolor
+workspace `docs/research/35-ls9000-ls4000-frame-setup.md`). No Nikon record
+from those units checks them yet. `Metering::step` uses the LS-8000 form on
+the LS-4000 and LS-40 too, and `nikon_monochrome_supported` adds the
+LS-9000, which has LS5000.md3's black and white curve set.
+`frame::Options::nikon_negative_meter`
 (`scan --nikon-meter`, `scan_frame(nikon_negative_meter=True)`) refuses every
 other unit. It meters as a color negative whatever `--film` or `film=` says, and
 per channel (white balance unlocked), as Nikon Scan meters a negative.

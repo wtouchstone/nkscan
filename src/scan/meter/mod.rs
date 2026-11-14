@@ -197,9 +197,14 @@ impl Metering {
                 colors: vec![image.colors[r], image.colors[g], image.colors[b]],
                 ..*image
             };
-            // nkcolor: the LS-8000 has its own curve and its own form of the analyzer
-            let ls8000 =
-                self.film == Film::Negative && caps.identity.model() == Some(Model::Ls8000);
+            // nkcolor: the LS-8000 has its own curve and its own form of the
+            // analyzer. LS4000.md3 (LS-4000 and LS-40) is the same code with the
+            // same curve (ecn2_correction docs/research/35)
+            let ls8000 = self.film == Film::Negative
+                && matches!(
+                    caps.identity.model(),
+                    Some(Model::Ls8000 | Model::Ls4000 | Model::Ls40)
+                );
             let ls8000_curve = ls8000.then(ls8000::curve);
             let inputs = Inputs {
                 base: pick(base),
@@ -347,14 +352,28 @@ enum CurveExposures {
     Ls8000(ls8000::Final),
 }
 
-/// nkcolor: whether a captured Nikon Scan session verifies the color negative meter on `model`
+/// nkcolor: whether Nikon Scan's color negative meter is ported for `model`
 ///
 /// The LS-50 and LS-5000 share LS5000.md3's rule, which [`negative`] ports. The
 /// LS-8000 uses [`ls8000`]. Each was checked against a Nikon builder record:
-/// the three final exposures match to the count. `scan --nikon-meter` and
+/// the three final exposures match to the count. LS9000.md3 is the LS5000.md3
+/// code with the same data, and LS4000.md3 (LS-4000 and LS-40) is the LS8000.md3
+/// code with the same data; under emulation each gives the captured record's
+/// exposures (2026-11-13, ecn2_correction docs/research/35). No Nikon record
+/// from those units checks them yet. `scan --nikon-meter` and
 /// `scan_frame(nikon_negative_meter=True)` refuse every other unit.
 pub fn nikon_negative_supported(model: Option<Model>) -> bool {
-    matches!(model, Some(Model::Ls50 | Model::Ls5000 | Model::Ls8000))
+    matches!(
+        model,
+        Some(
+            Model::Ls50
+                | Model::Ls5000
+                | Model::Ls8000
+                | Model::Ls9000
+                | Model::Ls4000
+                | Model::Ls40
+        )
+    )
 }
 
 /// nkcolor: whether Nikon Scan's black and white negative meter is ported for `model`
@@ -363,9 +382,11 @@ pub fn nikon_negative_supported(model: Option<Model>) -> bool {
 /// (`0x100ce978`) and pass factors (`0x100ced78`) [`negative`] uses for
 /// [`Film::MonochromeNegative`]. The rule is the color negative rule with
 /// those tables. No Nikon builder record of a black and white scan checks it
-/// yet. The LS-8000 module has its own analyzer, so it is not covered.
+/// yet. LS9000.md3 has the same black and white curve set and code. The
+/// LS-8000 and LS-4000 modules have no black and white curve set, so they are
+/// not covered.
 pub fn nikon_monochrome_supported(model: Option<Model>) -> bool {
-    matches!(model, Some(Model::Ls50 | Model::Ls5000))
+    matches!(model, Some(Model::Ls50 | Model::Ls5000 | Model::Ls9000))
 }
 
 /// The 35mm crop of Nikon Scan in prescan pixels, from the adapter, the holder and the film.
@@ -796,7 +817,10 @@ mod tests {
         assert!(nikon_negative_supported(Some(Model::Ls50)));
         assert!(nikon_negative_supported(Some(Model::Ls5000)));
         assert!(nikon_negative_supported(Some(Model::Ls8000)));
-        assert!(!nikon_negative_supported(Some(Model::Ls9000)));
+        // The same module code as the LS-5000 and the LS-8000 (2026-11-13)
+        assert!(nikon_negative_supported(Some(Model::Ls9000)));
+        assert!(nikon_negative_supported(Some(Model::Ls4000)));
+        assert!(nikon_negative_supported(Some(Model::Ls40)));
         assert!(!nikon_negative_supported(None));
     }
 
@@ -806,7 +830,8 @@ mod tests {
         assert!(nikon_monochrome_supported(Some(Model::Ls50)));
         assert!(nikon_monochrome_supported(Some(Model::Ls5000)));
         assert!(!nikon_monochrome_supported(Some(Model::Ls8000)));
-        assert!(!nikon_monochrome_supported(Some(Model::Ls9000)));
+        assert!(nikon_monochrome_supported(Some(Model::Ls9000)));
+        assert!(!nikon_monochrome_supported(Some(Model::Ls4000)));
         assert!(!nikon_monochrome_supported(None));
     }
 
