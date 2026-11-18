@@ -334,6 +334,15 @@ record. `Session::setup` parses those bytes through the same method.
 
 Test: `io::tests::a_meter_record_keeps_each_pass_and_its_measured_rectangle`.
 
+A meter pass that ends early stops the frame with `Error::IncompleteScan`, as
+a short full pass does in `scan::frame` (2026-11-18). On the LS-8000 a second
+scanner session, opened by the Web UI during a scan, cut a meter pass to 140
+of 558 lines. nkscan chose the exposure from that part of the frame and wrote
+`complete=false` in the meter record, and nkcolor could not open the frame.
+File: `src/session/autoexpose.rs`. No test: nkscan has no simulated unit that
+runs a metering loop. nkcolor also refuses a capture whose meter record has a
+short pass, and the Web UI no longer opens the unit while a scan runs.
+
 ## Frame reuse, manual offsets, overscan, and focus
 
 Files: `src/scan/frame.rs`, `src/scan/framing.rs`, `src/scan/focus.rs`, and

@@ -167,6 +167,15 @@ impl Session {
                     let taken = self
                         .scan_pass_with(&windows, PASS_TIMEOUT, &mut samples, |p| on(pass, p))
                         .await?;
+                    // nkcolor: a meter pass that ended early holds part of the
+                    // frame, and an exposure chosen from it is wrong. The full
+                    // pass refuses a short pass the same way (2026-11-18: a
+                    // second session cut a meter pass to 140 of 558 lines)
+                    if !taken.complete {
+                        return Err(Error::IncompleteScan {
+                            blocks: taken.blocks,
+                        });
+                    }
                     let image = Image::new(&taken.layout, &samples)?;
                     let step = metering.step(self.capabilities(), &image, &windows, &base, pass)?;
                     debug!(pass, ?step, "metering pass");
