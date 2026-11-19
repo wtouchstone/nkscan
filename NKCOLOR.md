@@ -2,10 +2,11 @@
 
 This file describes every local change from upstream nkscan. Branch `main`
 holds 40 commits on top of upstream `v0.19.0` (upstream `main` at `f971cfd`,
-which adds one build change after the `v0.19.0` tag). Each commit subject
-starts with "nkcolor:", except one note on the LS-8000 CCD row curves.
+which adds one build change after the `v0.19.0` tag), and a merge of
+upstream `v0.20.0` (`77b056a`) on 2026-11-19. Each commit subject starts with
+"nkcolor:", except one note on the LS-8000 CCD row curves.
 
-The 2026-11-11 sync to 0.19.0 and the 2026-10-27 sync to 0.17.0 are in
+The 2026-11-19 merge of 0.20.0, the 2026-11-11 sync to 0.19.0 and the 2026-10-27 sync to 0.17.0 are in
 [Upstream reconciliation](#upstream-reconciliation).
 The 2026-10-09 rebase onto `942121c` is in
 [docs/UPSTREAM_AUDIT_2026-10-09.md](docs/UPSTREAM_AUDIT_2026-10-09.md). Frame
@@ -308,6 +309,12 @@ gives; the raw film base reads near neutral.
 
 File: `src/protocol/model.rs`.
 
+Upstream 0.20.0 replaced this change (#82, from this report). Upstream now
+treats "infrared in every reading" as the normal case and gives the LS-5000
+and LS-9000 the `INFRARED_FIRST_READING` quirk. The LS-8000 has no quirk, so
+it decodes as below. The fork keeps only its test that the LS-8000 has no
+first-reading quirk. History of the fork change:
+
 The LS-8000 gets the `INFRARED_EVERY_READING` quirk, as the LS-50 has.
 With infrared and Samples 2 in the three-line mode, the unit sends red,
 green, blue and infrared for each reading: 8 samples a feed position. Read
@@ -496,6 +503,31 @@ behavior or offer something better:
   each line once, so the meter record's `bits=` keeps the unit's depth.
 
 ## Upstream reconciliation
+
+### 2026-11-19: merge of 0.20.0
+
+Upstream moved from `v0.19.0` to `v0.20.0` (`77b056a`), 6 commits. 0.20
+fixes multi-sample infrared on the LS-4000 and LS-8000 (#82), gives `--clean`
+Nikon's infrared leakage for the film type when no clear film measures one
+(0.14 for slides, 0.17 for negatives), makes `--clean` about ten times
+faster, and reports an SA-21 strip that cannot feed as a feed failure. This
+time `upstream/main` was merged into `main`; the fork's commits were not
+rebased.
+
+| Conflict | Resolution |
+| --- | --- |
+| `Quirks::INFRARED_EVERY_READING` (fork) against `INFRARED_FIRST_READING` (upstream) | Upstream's. It gives the LS-8000 the same decoding. The fork's model test now checks that the LS-8000 has no first-reading quirk. |
+| `image.rs` test of the LS-8000 three-line pass | Upstream's table test, which covers the LS-8000. |
+| `clean_frame` takes the fork's `quality` and upstream's `film` | Both. `scan_frame_with` passes `clean_quality` and `metering.film`. |
+| The fork's `clean` command and Python `clean_rgb_ir` | New `--film` option and `film="negative"` argument, default negative, for upstream's leakage. nkcolor cleans negatives only, so its calls do not change. |
+| CHANGELOG | Both sections. |
+
+Verification on 2026-11-19, macOS, no scanner: `cargo test -j 2
+--all-features` (232 library tests, 25 command-line tests, 1 doctest pass, 3
+hardware tests ignored), `cargo clippy --all-targets --all-features` and
+`cargo fmt --check` clean, and `stub_gen` adds only the new `film` argument
+to `nkscan.pyi`. Hardware still to check on Windows: an LS-8000 scan with
+`--samples 2 --ir`, and `--clean` on a negative.
 
 ### 2026-11-11: sync to 0.19.0
 

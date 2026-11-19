@@ -1,7 +1,8 @@
 use divan::counter::ItemsCount;
 use nkscan::{
-    dust::{self, Calibration, Options, Params, Prescan},
+    dust::{self, Options, Prescan},
     protocol::decode::Samples,
+    scan::profile::Film,
 };
 use std::sync::LazyLock;
 use tiff::decoder::{Decoder, DecodingResult, Limits};
@@ -32,17 +33,6 @@ fn options() -> Options {
         quality: dust::Quality::Normal,
         dpi: 4000,
     }
-}
-
-/// The profile every kernel bench runs under
-fn params() -> Params {
-    Params::new(
-        &options(),
-        &Calibration {
-            c: 0.05,
-            ir_ref: 40_000.0,
-        },
-    )
 }
 
 /// The biggest image, a 6x9 frame at 4000 DPI
@@ -110,86 +100,12 @@ static PRESCAN: LazyLock<Planes> = LazyLock::new(|| {
     }
 });
 
-/// A plane's worth of density values, the shape `confidence` sees. Value
-/// doesn't matter -- there is no data-dependent branching -- only the count
-fn density_plane(n: usize) -> Vec<f32> {
-    plane(n).into_iter().map(f32::from).collect()
-}
-
-/// A full-res red and IR plane, the real size `clean` calls `gate` at.
-/// `gate` takes raw samples now, fused with its own density transform
-#[divan::bench(args = [ROWS * COLS])]
-fn gate(bencher: divan::Bencher, n: usize) {
-    let p = params();
-    bencher
-        .counter(ItemsCount::new(n))
-        .with_inputs(|| (plane(n), plane(n)))
-        .bench_values(|(red, ir)| dust::gate(&red, &ir, &p));
-}
-
-/// Same shape as `gate`'s output, the input `confidence` sees
-#[divan::bench(args = [ROWS * COLS])]
-fn confidence(bencher: divan::Bencher, n: usize) {
-    let p = params();
-    bencher
-        .counter(ItemsCount::new(n))
-        .with_inputs(|| density_plane(n))
-        .bench_values(|g| dust::confidence(&g, COLS, &p));
-}
-
-/// Confidence values that stay under the `w >= 1` short-circuit, so every
-/// pixel actually walks its probes -- a worst case, since real confidence
-/// clips to 1 for a share of clean pixels that skip the probes entirely
-fn sub_one_plane(n: usize) -> Vec<f32> {
-    (0..n).map(|i| (i % 100) as f32 / 100.0).collect()
-}
-
-/// Full-res plane shape. `g` cycles through the full range so both sides of
-/// the dust floor phi show up in the probes
-#[divan::bench(args = [ROWS * COLS])]
-fn decide(bencher: divan::Bencher, n: usize) {
-    let p = params();
-    bencher
-        .counter(ItemsCount::new(n))
-        .with_inputs(|| (density_plane(n), sub_one_plane(n)))
-        .bench_values(|(g, w)| dust::decide(&g, &w, ROWS, COLS, &p));
-}
-
-/// A mask with roughly `pct`% of pixels flagged, evenly spread. Cost here
-/// doesn't depend on clustering (each flagged pixel's cost is independent),
-/// so spread vs clustered shouldn't matter, unlike a real scan's blobs
-fn mask_plane(n: usize, pct: usize) -> Vec<bool> {
-    (0..n).map(|i| i % 100 < pct).collect()
-}
-
-/// Full-res shape; flagged fraction matches what the pipeline actually sees
-/// on a real scan (1.2%, see the mask dump)
-#[divan::bench(args = [ROWS * COLS])]
-fn reconstruct_core(bencher: divan::Bencher, n: usize) {
-    let p = params();
-    bencher
-        .counter(ItemsCount::new(n))
-        .with_inputs(|| {
-            (
-                density_plane(n),
-                sub_one_plane(n),
-                plane(n),
-                plane(n),
-                plane(n),
-                mask_plane(n, 1),
-            )
-        })
-        .bench_values(|(g, w, r, gr, b, mask)| {
-            dust::reconstruct_core(&g, &w, [&r, &gr, &b], &mask, &p, ROWS, COLS)
-        });
-}
-
 #[divan::bench]
 fn calibrate(bencher: divan::Bencher) {
     bencher
         .counter(ItemsCount::new(PRESCAN_ROWS * PRESCAN_COLS))
         .with_inputs(prescan_image)
-        .bench_values(|prescan| dust::calibrate(&prescan));
+        .bench_values(|prescan| dust::calibrate(&prescan, Film::Positive));
 }
 
 fn prescan_image() -> Prescan<'static> {
@@ -262,7 +178,7 @@ fn clean(bencher: divan::Bencher) {
             (r, g, b, ir, prescan)
         })
         .bench_values(|(mut r, mut g, mut b, ir, prescan)| {
-            let cal = dust::calibrate(&prescan).expect("clear film in the prescan");
+            let cal = dust::calibrate(&prescan, Film::Positive).expect("clear film in the prescan");
             dust::clean([&mut r, &mut g, &mut b], &ir, &cal, ROWS, COLS, &options())
         });
 }
@@ -349,7 +265,8 @@ fn clean_35mm(bencher: divan::Bencher) {
             (r, g, b, ir, prescan)
         })
         .bench_values(|(mut r, mut g, mut b, ir, prescan)| {
-            let cal = dust::calibrate(&prescan).expect("clear film in the synthetic prescan");
+            let cal = dust::calibrate(&prescan, Film::Positive)
+                .expect("clear film in the synthetic prescan");
             dust::clean(
                 [&mut r, &mut g, &mut b],
                 &ir,

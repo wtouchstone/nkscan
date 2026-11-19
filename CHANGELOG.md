@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## nkcolor fork (on 0.19.0)
+## nkcolor fork (on 0.20.0)
 
 These changes are local to the nkcolor fork. NKCOLOR.md explains each one.
 
@@ -34,6 +34,23 @@ These changes are local to the nkcolor fork. NKCOLOR.md explains each one.
 - The FH-835M and FH-835S holders are 135.
 - The LS-8000 uses host metering despite its reserved AE bits, and cleans with the medium-format dust profile. An unrecognized scanner is refused for cleaning.
 - A `--superfine-pair` scan with more than one reading a line is scaled from its 16-bit average (0.19 sync).
+- The fork's LS-8000 infrared quirk is replaced by upstream's `INFRARED_FIRST_READING` (0.20 sync), which gives the LS-8000 the same decoding.
+
+## [0.20.0]
+
+### Fixed
+
+- A multi-sample infrared pass from an LS-4000 or LS-8000 decodes correctly. These units and the LS-50 send infrared in every reading of a line. Only the LS-5000 and LS-9000 send it in the first reading alone (#82).
+
+### Changed
+
+- When no clear film measures the red leakage into infrared, `--clean` uses the leakage of Nikon's ICE engine for the film type: 0.14 for slides and 0.17 for negatives. Before, it used none.
+- `--clean` is about ten times faster. A 2048 x 2048 frame takes 0.12 s on one thread and 15 ms on 24 threads. Nikon's ICE engine takes 0.75 s on one thread. It uses AVX2, AVX-512, NEON or SSE2. The result is the same to within float rounding.
+- When an SA-21 cannot feed a strip, as at torn perforations, nkscan reports a feed failure. Before, it reported a hardware error.
+- **Breaking:** `protocol::sense::Failure` has the new variant `Feed`.
+- **Breaking:** `Quirks::INFRARED_EVERY_READING` is now `Quirks::INFRARED_FIRST_READING`, and the LS-5000 and LS-9000 have it.
+- **Breaking:** `dust::calibrate` and `scan::clean::clean_frame` take the `Film`.
+- **Breaking:** `dust::gate`, `dust::confidence`, `dust::decide` and `dust::reconstruct_core` are removed. Use `dust::clean`.
 
 ## [0.19.0]
 

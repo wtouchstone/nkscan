@@ -220,7 +220,7 @@ fn init_logging(level: Option<&str>, path: Option<PathBuf>) -> PyResult<()> {
 /// Remove infrared-detected defects from a saved RGB image.
 #[gen_stub_pyfunction]
 #[pyfunction]
-#[pyo3(signature = (rgb, infrared, model, dpi=4000, quality="normal"))]
+#[pyo3(signature = (rgb, infrared, model, dpi=4000, quality="normal", film="negative"))]
 fn clean_rgb_ir(
     py: Python<'_>,
     rgb: PyReadonlyArray3<'_, u16>,
@@ -228,6 +228,7 @@ fn clean_rgb_ir(
     model: &str,
     dpi: u32,
     quality: &str,
+    film: &str,
 ) -> PyResult<(Py<PyArray3<u16>>, usize)> {
     let rgb = rgb.as_array();
     let infrared = infrared.as_array();
@@ -249,6 +250,8 @@ fn clean_rgb_ir(
     }
     let unit = Model::from_product(model)
         .ok_or_else(|| PyValueError::new_err(format!("unknown scanner model {model:?}")))?;
+    // 0.20: the film picks Nikon's infrared leakage when no clear film measures one
+    let film: crate::scan::profile::Film = film.parse().map_err(PyValueError::new_err)?;
     let quality = match quality.to_ascii_lowercase().as_str() {
         "normal" => dust::Quality::Normal,
         "fine" => dust::Quality::Fine,
@@ -288,7 +291,7 @@ fn clean_rgb_ir(
             colors,
             ir: Some(infrared_plane),
         };
-        let rebuilt = clean_frame(&mut samples, &pass, Some(unit), quality)?;
+        let rebuilt = clean_frame(&mut samples, &pass, Some(unit), quality, film)?;
         let mut chunky = Vec::with_capacity(count * 3);
         for index in 0..count {
             chunky.push(samples.colors[0][index]);

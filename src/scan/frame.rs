@@ -205,6 +205,7 @@ pub async fn scan_frame_with(
                 &pass,
                 session.capabilities().identity.model(),
                 options.clean_quality,
+                options.metering.film,
             )
         })
         .transpose()?;

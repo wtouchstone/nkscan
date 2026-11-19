@@ -84,8 +84,8 @@ impl Model {
     /// What this model's firmware does that its pages do not say
     pub fn quirks(self) -> Quirks {
         match self {
-            Self::Ls50 => Quirks::UNADVERTISED_MULTI_READING | Quirks::INFRARED_EVERY_READING,
-            Self::Ls8000 => Quirks::INFRARED_EVERY_READING,
+            Self::Ls50 => Quirks::UNADVERTISED_MULTI_READING,
+            Self::Ls5000 | Self::Ls9000 => Quirks::INFRARED_FIRST_READING,
             _ => Quirks::empty(),
         }
     }
@@ -98,12 +98,10 @@ bitflags::bitflags! {
         /// The unit reads a line 2 to 16 times, but byte 5 of its SET WINDOW
         /// page does not set `MULTI_READING`. LS-50 firmware 1.02 and 2.04
         const UNADVERTISED_MULTI_READING = 1 << 0;
-        /// With more than one reading a line, the unit reads infrared again on
-        /// every reading, so each reading is R, G, B, IR. Other units read
-        /// infrared one time, with the first reading. LS-50, and the LS-8000
-        /// in its three-line mode: a 2-reading pass there read as one infrared
-        /// reading put each channel one slot off per feed position
-        const INFRARED_EVERY_READING = 1 << 1;
+        /// With more than one reading a line, the unit reads infrared in the
+        /// first reading only. Other units read infrared in every reading.
+        /// LS-5000 (issue 52) and LS-9000
+        const INFRARED_FIRST_READING = 1 << 1;
     }
 }
 
@@ -121,13 +119,14 @@ mod tests {
         assert_eq!(Model::from_product("LS-2000"), None);
     }
 
-    /// The LS-8000 reads infrared with every reading. The LS-5000 does not
+    /// nkcolor: the LS-8000 reads infrared with every reading, so it has no
+    /// first-reading quirk. The LS-5000 has it (0.20 sync)
     #[test]
     fn the_ls8000_reads_infrared_every_reading() {
         assert!(
-            Model::Ls8000
+            !Model::Ls8000
                 .quirks()
-                .contains(Quirks::INFRARED_EVERY_READING)
+                .contains(Quirks::INFRARED_FIRST_READING)
         );
         assert!(
             !Model::Ls8000
@@ -135,9 +134,9 @@ mod tests {
                 .contains(Quirks::UNADVERTISED_MULTI_READING)
         );
         assert!(
-            !Model::Ls5000
+            Model::Ls5000
                 .quirks()
-                .contains(Quirks::INFRARED_EVERY_READING)
+                .contains(Quirks::INFRARED_FIRST_READING)
         );
     }
 

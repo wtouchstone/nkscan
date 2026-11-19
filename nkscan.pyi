@@ -572,7 +572,7 @@ class UnsupportedError(ScannerError):
     """
     ...
 
-def clean_rgb_ir(rgb: numpy.typing.NDArray[numpy.uint16], infrared: numpy.typing.NDArray[numpy.uint16], model: builtins.str, dpi: builtins.int = 4000, quality: builtins.str = 'normal') -> tuple[numpy.typing.NDArray[numpy.uint16], builtins.int]:
+def clean_rgb_ir(rgb: numpy.typing.NDArray[numpy.uint16], infrared: numpy.typing.NDArray[numpy.uint16], model: builtins.str, dpi: builtins.int = 4000, quality: builtins.str = 'normal', film: builtins.str = 'negative') -> tuple[numpy.typing.NDArray[numpy.uint16], builtins.int]:
     r"""
     Remove infrared-detected defects from a saved RGB image.
     """

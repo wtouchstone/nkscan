@@ -52,7 +52,7 @@ pub struct Layout {
     pub readings_per_line: u8,
     /// True if the unit reads infrared again with the colors on every reading.
     /// Otherwise it reads infrared one time, with the first reading. See
-    /// [`Quirks::INFRARED_EVERY_READING`]
+    /// [`Quirks::INFRARED_FIRST_READING`]
     pub infrared_per_reading: bool,
     /// Lines on the CCD, which is how many arrive at once under
     /// [`MULTILINE_SIMULTANEOUS`](ColorInterleaving::MULTILINE_SIMULTANEOUS)
@@ -369,10 +369,10 @@ impl Layout {
             interleaving: first.color_interleaving,
             // Byte 40's high nibble is one less than the number of reads
             readings_per_line: first.multiple_reading.saturating_add(1),
-            infrared_per_reading: caps
+            infrared_per_reading: !caps
                 .identity
                 .quirks()
-                .contains(Quirks::INFRARED_EVERY_READING),
+                .contains(Quirks::INFRARED_FIRST_READING),
             ccd_lines: caps.address.lines,
             packed_rows: packed_rows(caps, first.color_interleaving),
             // The gap is along the feed, so it divides by the feed's pitch. The
@@ -496,8 +496,8 @@ impl Layout {
 
     /// Readouts the unit emits per line
     ///
-    /// Multi-sampling repeats the color channels. Infrared is read one time,
-    /// however many readings are set, unless `infrared_per_reading` is true
+    /// Multi-sampling repeats every channel. If `infrared_per_reading` is
+    /// false, the unit reads infrared one time for any number of readings
     pub fn readouts(&self) -> u32 {
         if self.infrared_per_reading {
             return self.channels.len() as u32 * self.readings();
@@ -568,6 +568,13 @@ mod tests {
             adapter: None,
             holder: None,
         }
+    }
+
+    /// [`caps`] for a unit that names itself `product`
+    fn model(product: &str, transfer: u8, line_gap: u8, lines: u8) -> Capabilities {
+        let mut c = caps(transfer, line_gap, lines);
+        c.identity.product = product.into();
+        c
     }
 
     fn window(id: u8, dpi: u16, size: (u32, u32)) -> Window {
@@ -847,8 +854,8 @@ mod tests {
         assert_eq!(l.granules.take(0, l.total_bytes(), 128 * 1024), 120_320);
     }
 
-    /// The unit reads infrared one time whatever the colors get, so infrared
-    /// makes the first reading of a line longer than the others
+    /// The LS-5000 reads infrared one time whatever the colors get, so
+    /// infrared makes the first reading of a line longer than the others
     ///
     /// The pass that stopped an LS-5000 on `--samples 2 --ir`: the unit pads
     /// the reading of four channels by 184 and the reading of three by 394,
@@ -874,7 +881,13 @@ mod tests {
             w.composition = Composition::MultilevelRGB;
         }
 
-        let l = Layout::new(&caps(0x03, 1, 1), &windows, 4000, Some(&truncation)).unwrap();
+        let l = Layout::new(
+            &model("LS-5000 ED", 0x03, 1, 1),
+            &windows,
+            4000,
+            Some(&truncation),
+        )
+        .unwrap();
 
         assert!(!l.even_readings());
         assert_eq!(l.bytes_per_reading(0), 31744);
@@ -913,10 +926,13 @@ mod tests {
             w.multiple_reading = 1;
             w.composition = Composition::MultilevelRGB;
         }
-        let mut ls50 = caps(0x03, 1, 1);
-        ls50.identity.product = "LS-50 ED".into();
-
-        let l = Layout::new(&ls50, &windows, 4000, Some(&truncation)).unwrap();
+        let l = Layout::new(
+            &model("LS-50 ED", 0x03, 1, 1),
+            &windows,
+            4000,
+            Some(&truncation),
+        )
+        .unwrap();
 
         assert!(l.infrared_per_reading);
         assert!(l.even_readings());
@@ -926,35 +942,37 @@ mod tests {
         assert_eq!(l.readouts(), 8);
     }
 
-    /// The LS-8000 reads infrared on every reading in its three-line mode too
-    ///
-    /// The pass from nkcolor's hardware report (2026-11-11): 8964 x 6696 at
-    /// 4000 dpi, 14 bit, 2 readings and infrared. Read as one infrared reading
-    /// it came back as 14 bytes a pixel, with each channel one slot further off
-    /// every feed position
+    /// Only the LS-5000 and the LS-9000 read infrared with the first reading
+    /// alone. Every other unit, and a unit that is not known, reads it on
+    /// every reading
     #[test]
-    fn an_ls8000_reads_infrared_on_every_reading_in_three_line_mode() {
-        let mut windows = rgb(4000, (8964, 6696));
-        windows.push(window(9, 4000, (8964, 6696)));
+    fn infrared_is_read_once_on_the_ls5000_and_ls9000_only() {
+        let mut windows = rgb(4000, (986, 1000));
+        windows.push(window(9, 4000, (986, 1000)));
         for w in &mut windows {
-            w.bpp = 14;
             w.multiple_reading = 1;
             w.composition = Composition::MultilevelRGB;
             w.color_interleaving = ColorInterleaving::MULTILINE_SIMULTANEOUS;
         }
-        let mut ls8000 = caps(0x03, 12, 3);
-        ls8000.identity.product = "LS-8000 ED".into();
 
-        let l = Layout::new(&ls8000, &windows, 4000, None).unwrap();
-
-        assert!(l.infrared_per_reading);
-        assert!(l.even_readings());
-        assert_eq!(l.readouts(), 8);
-        // 4 channels x 2 readings x 2 bytes a pixel
-        assert_eq!(l.total_bytes(), 8964 * 6696 * 16);
+        for (product, every) in [
+            ("LS-40 ED", true),
+            ("LS-50 ED", true),
+            ("LS-4000 ED", true),
+            ("LS-8000 ED", true),
+            ("LS-5000 ED", false),
+            ("LS-9000 ED", false),
+            ("", true),
+        ] {
+            let l = Layout::new(&model(product, 0x03, 12, 3), &windows, 4000, None).unwrap();
+            assert_eq!(l.infrared_per_reading, every, "{product}");
+            // 2 readings of R, G, B, IR, or R, G, B, IR then R, G, B
+            assert_eq!(l.readouts(), if every { 8 } else { 7 }, "{product}");
+            assert_eq!(l.even_readings(), every, "{product}");
+        }
     }
 
-    /// Issue 52: the same unit on `--samples 4 --ir`, where the CCD's two rows
+    /// Issue 52: the LS-5000 on `--samples 4 --ir`, where the CCD's two rows
     /// come packed into one line
     ///
     /// The line is then 207872 bytes and no transfer can carry one. Ending a
@@ -982,7 +1000,13 @@ mod tests {
             w.color_interleaving = ColorInterleaving::MULTILINE_SIMULTANEOUS;
         }
 
-        let l = Layout::new(&caps(0x03, 1, 2), &windows, 4000, Some(&truncation)).unwrap();
+        let l = Layout::new(
+            &model("LS-5000 ED", 0x03, 1, 2),
+            &windows,
+            4000,
+            Some(&truncation),
+        )
+        .unwrap();
 
         assert_eq!((l.readings(), l.packed_rows), (4, 2));
         assert_eq!(
@@ -1015,7 +1039,13 @@ mod tests {
             w.composition = Composition::MultilevelRGB;
         }
 
-        let l = Layout::new(&caps(0x03, 1, 1), &windows, 4000, Some(&truncation)).unwrap();
+        let l = Layout::new(
+            &model("LS-5000 ED", 0x03, 1, 1),
+            &windows,
+            4000,
+            Some(&truncation),
+        )
+        .unwrap();
 
         assert_eq!(l.bytes_per_reading(0), 3945 * 2 * 4 + 394);
         assert_eq!(l.bytes_per_reading(1), 3945 * 2 * 3 + 394);

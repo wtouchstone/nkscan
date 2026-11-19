@@ -112,7 +112,7 @@ pub fn run(args: Clean) -> Result<()> {
         colors: deinterleave3(&chunky),
         ir: Some(ir),
     };
-    let rebuilt = clean_frame(&mut samples, &pass, Some(unit), quality)?;
+    let rebuilt = clean_frame(&mut samples, &pass, Some(unit), quality, args.film)?;
     write_rgb16(&args.out, &samples.colors, cols, rows, args.dpi)?;
     println!("rebuilt {rebuilt} pixels");
     Ok(())
@@ -129,6 +129,7 @@ mod tests {
             model: model.to_string(),
             dpi: 4000,
             quality: CleanQuality::Normal,
+            film: nkscan::scan::profile::Film::Negative,
             out: Path::new("out.tiff").to_path_buf(),
         }
     }

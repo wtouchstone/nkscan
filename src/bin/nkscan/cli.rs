@@ -113,6 +113,9 @@ pub struct Clean {
     /// Dust reconstruction quality
     #[arg(long, value_enum, default_value_t = CleanQuality::Normal)]
     pub quality: CleanQuality,
+    /// The film scanned, for Nikon's infrared leakage when no clear film measures one
+    #[arg(long, value_enum, default_value_t = Film::Negative)]
+    pub film: Film,
     /// Where to write the cleaned 16-bit RGB image
     pub out: PathBuf,
 }
